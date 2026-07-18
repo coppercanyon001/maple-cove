@@ -332,8 +332,10 @@ export default function MapleCove() {
         const gameRoot = new THREE.Group();
         scene.add(gameRoot);
 
+        // Segmented so the sea can roll — vertices are displaced every frame.
+        const waterGeo = new THREE.PlaneGeometry(480, 480, 56, 56);
         const water = new THREE.Mesh(
-          new THREE.CircleGeometry(240, 48),
+          waterGeo,
           new THREE.MeshStandardMaterial({ color: 0x4fa3c9, roughness: 0.35, metalness: 0.05 }),
         );
         water.rotation.x = -Math.PI / 2;
@@ -377,8 +379,9 @@ export default function MapleCove() {
         plaza.receiveShadow = true;
         gameRoot.add(plaza);
 
+        const riverGeo = new THREE.PlaneGeometry(RIVER_X1 - RIVER_X0, 58, 3, 44);
         const river = new THREE.Mesh(
-          new THREE.PlaneGeometry(RIVER_X1 - RIVER_X0, 58),
+          riverGeo,
           new THREE.MeshStandardMaterial({ color: 0x58b4d6, roughness: 0.3, transparent: true, opacity: 0.94 }),
         );
         river.rotation.x = -Math.PI / 2;
@@ -907,8 +910,8 @@ export default function MapleCove() {
             if (!mod || disposed) return;
             const vista = new mod.SplatMesh({ url: VISTA_URL });
             vista.quaternion.set(1, 0, 0, 0);
-            vista.scale.setScalar(14);
-            vista.position.set(0, -3.5, 0);
+            vista.scale.setScalar(20);
+            vista.position.set(0, -4.5, 0);
             gameRoot.add(vista);
             if (new URLSearchParams(location.search).has("qa")) {
               (window as unknown as Record<string, unknown>).__vista = vista;
@@ -1337,8 +1340,19 @@ export default function MapleCove() {
           // Looping ambient day-night cycle (no fail state): morning → dusk → morning.
           const dayU = 0.5 - 0.5 * Math.cos((elapsed / DAY_CYCLE) * Math.PI * 2);
           const light = dayLerp(dayU);
-          (scene.background as THREE.Color).copy(skyColor);
-          scene.fog!.color.copy(skyColor);
+          if (insideDoor) {
+            // Sealed in: everything beyond the splat room fades to cave dark,
+            // so the outside of the splat is never visible.
+            (scene.background as THREE.Color).setHex(0x120d0b);
+            scene.fog!.color.setHex(0x120d0b);
+            (scene.fog as THREE.Fog).near = 6;
+            (scene.fog as THREE.Fog).far = 16;
+          } else {
+            (scene.background as THREE.Color).copy(skyColor);
+            scene.fog!.color.copy(skyColor);
+            (scene.fog as THREE.Fog).near = 95;
+            (scene.fog as THREE.Fog).far = 260;
+          }
           sun.color.copy(sunColor);
           sun.intensity = light.sunI;
           hemi.intensity = light.hemiI;
@@ -1746,6 +1760,25 @@ export default function MapleCove() {
           });
           foamMat.opacity = 0.24 + Math.sin(elapsed * 1.3) * 0.12;
           foam.scale.setScalar(1 + Math.sin(elapsed * 1.3) * 0.004);
+          // Rolling water: gentle crossing swells on the sea, a downstream
+          // ripple train on the river.
+          {
+            const pos = waterGeo.attributes.position;
+            for (let i = 0; i < pos.count; i += 1) {
+              const wx = pos.getX(i);
+              const wy = pos.getY(i);
+              pos.setZ(i, Math.sin(wx * 0.16 + elapsed * 1.1) * 0.09 + Math.cos(wy * 0.13 + elapsed * 0.8) * 0.09);
+            }
+            pos.needsUpdate = true;
+            waterGeo.computeVertexNormals();
+            const rpos = riverGeo.attributes.position;
+            for (let i = 0; i < rpos.count; i += 1) {
+              const ry = rpos.getY(i);
+              rpos.setZ(i, Math.sin(ry * 0.9 - elapsed * 2.4) * 0.035);
+            }
+            rpos.needsUpdate = true;
+            riverGeo.computeVertexNormals();
+          }
 
           // Fireworks during the celebration and on the win screen.
           if (phase === "celebrating" || phase === "won") {
@@ -1788,8 +1821,8 @@ export default function MapleCove() {
           const skyward = phase === "celebrating" || phase === "won";
           const py = insideDoor ? INTERIOR_Y : bridgeY(playerRoot.position.x, playerRoot.position.z);
           if (insideDoor) {
-            desiredCamera.set(playerRoot.position.x * 0.4, py + 2.7, playerRoot.position.z + 4.4);
-            cameraTarget.set(0, py + 1.1, 0);
+            desiredCamera.set(playerRoot.position.x * 0.35, py + 2.1, playerRoot.position.z + 3.1);
+            cameraTarget.set(playerRoot.position.x * 0.5, py + 1.0, playerRoot.position.z - 0.6);
           } else {
             desiredCamera.set(playerRoot.position.x, py + (skyward ? 4.6 : 6.0), playerRoot.position.z + (skyward ? 11.5 : 9.9));
             cameraTarget.set(playerRoot.position.x, py + (skyward ? 7.5 : 1.7), playerRoot.position.z - (skyward ? 9 : 2.6));
