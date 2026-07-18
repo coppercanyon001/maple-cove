@@ -866,9 +866,9 @@ export default function MapleCove() {
         const interiorFloorY = (x: number, z: number): number | null => {
           const collider = insideDoor ? interiorColliders.get(insideDoor.key) : undefined;
           if (!collider) return null;
-          floorRayOrigin.set(x, INTERIOR_Y + 2.6, z);
+          floorRayOrigin.set(x, INTERIOR_Y + 1.25, z);
           floorRaycaster.set(floorRayOrigin, FLOOR_DOWN);
-          floorRaycaster.far = 6.5;
+          floorRaycaster.far = 3.5;
           const hits = floorRaycaster.intersectObject(collider, true);
           return hits.length ? hits[0].point.y : null;
         };
@@ -1275,9 +1275,11 @@ export default function MapleCove() {
           return 0;
         };
 
+        let snapCameraNext = false;
         const enterDoor = (door: (typeof DOORS)[number]) => {
           insideDoor = door;
           doorCooldown = 1.2;
+          snapCameraNext = true;
           gameRoot.visible = false;
           interiorRoot.visible = true;
           showInterior(door.key);
@@ -1293,6 +1295,7 @@ export default function MapleCove() {
           const door = insideDoor;
           insideDoor = null;
           doorCooldown = 2.0;
+          snapCameraNext = true;
           gameRoot.visible = true;
           interiorRoot.visible = false;
           playerRoot.position.set(door.exitX, 0, door.exitZ);
@@ -1591,8 +1594,11 @@ export default function MapleCove() {
             // AC-style sneaking: rushing straight in startles the dragonfly.
             // Creep in short bursts — alarm builds while you move nearby and
             // fades while you hold still.
-            if (d < 4.5 && moving) bug.alarm = Math.min(1, bug.alarm + dt * 2.0);
-            else bug.alarm = Math.max(0, bug.alarm - dt * 1.2);
+            const towardBug = moving && (
+              (move.x * (bug.root.position.x - playerRoot.position.x) + move.z * (bug.root.position.z - playerRoot.position.z)) / Math.max(d, 0.001) > 0.45
+            );
+            if (d < 3.4 && towardBug) bug.alarm = Math.min(1, bug.alarm + dt * 1.7);
+            else bug.alarm = Math.max(0, bug.alarm - dt * 1.5);
             if (bug.alarm >= 1) {
               bug.caught = true;
               bug.root.visible = false;
@@ -1821,13 +1827,18 @@ export default function MapleCove() {
           const skyward = phase === "celebrating" || phase === "won";
           const py = insideDoor ? INTERIOR_Y : bridgeY(playerRoot.position.x, playerRoot.position.z);
           if (insideDoor) {
-            desiredCamera.set(playerRoot.position.x * 0.35, py + 2.1, playerRoot.position.z + 3.1);
-            cameraTarget.set(playerRoot.position.x * 0.5, py + 1.0, playerRoot.position.z - 0.6);
+            desiredCamera.set(playerRoot.position.x * 0.35, py + 1.55, playerRoot.position.z + 2.35);
+            cameraTarget.set(playerRoot.position.x * 0.5, py + 0.85, playerRoot.position.z - 0.5);
           } else {
             desiredCamera.set(playerRoot.position.x, py + (skyward ? 4.6 : 6.0), playerRoot.position.z + (skyward ? 11.5 : 9.9));
             cameraTarget.set(playerRoot.position.x, py + (skyward ? 7.5 : 1.7), playerRoot.position.z - (skyward ? 9 : 2.6));
           }
-          camera.position.lerp(desiredCamera, 1 - Math.pow(0.001, dt));
+          if (snapCameraNext) {
+            snapCameraNext = false;
+            camera.position.copy(desiredCamera);
+          } else {
+            camera.position.lerp(desiredCamera, 1 - Math.pow(0.001, dt));
+          }
           camera.lookAt(cameraTarget);
           renderer.render(scene, camera);
           animationFrame = requestAnimationFrame(render);
