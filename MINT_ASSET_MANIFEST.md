@@ -77,3 +77,16 @@ Props pack first pass: 14/20 final; regeneration running for Bone Mailbox, Ammon
 New mechanics: fishing (ripple spots), bug catching (Mint dragonflies), fruit planting (soil patches grow Mint trees). Fossil digging deliberately omitted per client direction.
 
 Rig fix log: T-Rex v1/v2 and Ankylosaurus v1 rejected by the rig provider (snouted/armored silhouettes defeat humanoid detection). Working models: "Leaf Apron Ankylosaur" v2 `ks79fwks0xza1nf99kvcqknsms8ar1sg` (batch `w57d2xm6z4gabwzw2451pw4zgh8arvpr`) and "Teal Vest Dino Kid" T-Rex v3 flat-face `ks7fnsvtrdh40p1hz0m37wzxbd8askx1` (batch `w57eh9406p85s4581ccx4bh8hd8arsvf`). Rule of thumb: rig-safe dino = flat human-like face, front eyes, visible neck, no tail, minimal back geometry.
+
+## Splat worlds (per-building interiors + vista, 2026-07-18)
+
+| World | Asset ID | Used as |
+| --- | --- | --- |
+| Flintstones Cave Home (v1) | `j977zrhg7746far5nk1486q5hx8ash92` | Player hut interior |
+| Triceratops Cave Home | `j97fvypcsqenw8ey45y036b9ed8asedf` | Trixie's hut interior |
+| Stegosaurus Cave Home | `j978fs4zvy1qx92wz6x0nyjzhs8artq3` | Spike's hut interior |
+| Stone Age General Store | `j97b6x5fszekm5pxs4xr3qftpn8as74d` | Shop interior |
+| Flintstones Fossil Hall | `j972dqzmpzsbrp894nwxp1m7f98ar72a` | Museum interior — **BLOCKED at preview: Mint monthly credits exhausted (needs 1,500-credit top-up, then approve_final_generation + wire URL into INTERIOR_WORLDS.museum)** |
+| Prehistoric Lagoon Valley | `j971emcne9xvtxkrvxhdag5ttn8arnpz` | Exterior horizon vista (scale 14, y −3.5) |
+
+AC-style catching shipped: fish swim in FISH_ZONES, rod auto-out in range, bobber cast on standstill, flee on movement; net held near dragonflies. Bobber is a tiny procedural marker (non-Mint, flagged).
