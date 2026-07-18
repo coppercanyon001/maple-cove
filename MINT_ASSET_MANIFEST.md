@@ -75,3 +75,5 @@ Rig batches: Cave Kid `w57143e8vdaj4bgv2jw0gfhpk58as3h0` (Idle 0 / run 659 / car
 Props pack first pass: 14/20 final; regeneration running for Bone Mailbox, Ammonite Shell, Dino Egg, Bone Signpost, Web Bug Net, Fruit Sapling.
 
 New mechanics: fishing (ripple spots), bug catching (Mint dragonflies), fruit planting (soil patches grow Mint trees). Fossil digging deliberately omitted per client direction.
+
+Rig fix log: T-Rex v1/v2 and Ankylosaurus v1 rejected by the rig provider (snouted/armored silhouettes defeat humanoid detection). Working models: "Leaf Apron Ankylosaur" v2 `ks79fwks0xza1nf99kvcqknsms8ar1sg` (batch `w57d2xm6z4gabwzw2451pw4zgh8arvpr`) and "Teal Vest Dino Kid" T-Rex v3 flat-face `ks7fnsvtrdh40p1hz0m37wzxbd8askx1` (batch `w57eh9406p85s4581ccx4bh8hd8arsvf`). Rule of thumb: rig-safe dino = flat human-like face, front eyes, visible neck, no tail, minimal back geometry.

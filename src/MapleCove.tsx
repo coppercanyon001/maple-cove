@@ -68,7 +68,7 @@ const VILLAGERS = [
     ],
   },
   {
-    key: "trex", x: 16.6, z: -4.4, yaw: -1.24,
+    key: "trex", x: 18.4, z: -3.4, yaw: -1.24,
     chatter: [
       "I curate the bone museum — those ribs are my great-uncle's!",
       "Tiny arms, big dreams. That's the curator's motto.",
@@ -79,7 +79,7 @@ const VILLAGERS = [
     ],
   },
   {
-    key: "ankylosaurus", x: -2.4, z: -10.6, yaw: 0.28,
+    key: "ankylosaurus", x: -1.2, z: -11.6, yaw: 0.28,
     chatter: [
       "Keep the goods coming and I'll have your hut stacked in no time!",
       "The shop shelves are nearly empty — good sign!",
@@ -108,15 +108,20 @@ const DOORS = [
   { key: "yellow", x: -13.8, z: -6.0, exitX: -12.0, exitZ: -5.2, label: "Spike's hut" },
   { key: "coral", x: 5.9, z: 11.8, exitX: 5.1, exitZ: 10.2, label: "Trixie's hut" },
   { key: "own", x: -7.3, z: 9.9, exitX: -6.2, exitZ: 8.5, label: "your hut" },
+  { key: "shop", x: -3.2, z: -11.2, exitX: -2.7, exitZ: -9.4, label: "Boulder's shop" },
+  { key: "museum", x: 16.7, z: -5.9, exitX: 17.8, exitZ: -4.4, label: "the bone museum" },
 ] as const;
 
-// Fishing ripples sit just off the bank; the player fishes from dry land.
-const FISHING_SPOTS = [
-  { x: 12.9, z: 6.5 },
-  { x: 12.9, z: -9.5 },
-  { x: 2, z: 29.6 },
-  { x: -28.6, z: 4 },
+// Fish swim inside these water zones (river halves + south shore).
+// AC-style: rod comes out near a fish, standing still casts, the fish is
+// lured to the bobber — move and it flees.
+const FISH_ZONES = [
+  { x0: 11.0, x1: 14.8, z0: 3.0, z1: 24, y: 0.07 },
+  { x0: 11.0, x1: 14.8, z0: -24, z1: -5.0, y: 0.07 },
+  { x0: -10, x1: 10, z0: 30.2, z1: 33.5, y: -0.34 },
 ] as const;
+const ROD_OUT_RANGE = 3.6;
+const CAST_RANGE = 3.0;
 
 // Catchable Mint dragonflies orbit these meadow anchors.
 const DRAGONFLY_SPOTS = [
@@ -608,20 +613,43 @@ export default function MapleCove() {
         type ShellSpot = { x: number; z: number; respawnAt: number; filled: boolean };
         const shellSpots: ShellSpot[] = SHELL_SPOTS.map(([x, z]) => ({ x, z, respawnAt: 0, filled: false }));
 
-        // ---------- Fishing spots (ripples in river & sea) ----------
-        type FishSpot = { x: number; z: number; ripple: THREE.Mesh; taken: boolean; respawnAt: number; phase: number };
-        const fishSpots: FishSpot[] = FISHING_SPOTS.map((s, i) => {
-          const inRiver = s.x > RIVER_X0 - 1 && s.x < RIVER_X1 + 1 && Math.abs(s.z) < 29;
-          const ripple = new THREE.Mesh(
-            new THREE.RingGeometry(0.34, 0.58, 24),
+        // ---------- Swimming fish (AC-style catching) ----------
+        type SwimFish = {
+          obj: THREE.Object3D; zone: (typeof FISH_ZONES)[number];
+          x: number; z: number; angle: number; speed: number;
+          state: "swim" | "lured" | "gone"; stateT: number; respawnAt: number;
+        };
+        const fishTemplate = fitMax(sceneFor(ASSETS.props.fish), 0.62);
+        const swimFish: SwimFish[] = [0, 1, 2, 0].map((zoneIndex, i) => {
+          const zone = FISH_ZONES[zoneIndex];
+          const obj = fishTemplate.clone(true);
+          disableShadowCast(obj);
+          gameRoot.add(obj);
+          return {
+            obj, zone,
+            x: THREE.MathUtils.lerp(zone.x0, zone.x1, 0.3 + 0.4 * ((i * 0.37) % 1)),
+            z: THREE.MathUtils.lerp(zone.z0, zone.z1, 0.2 + 0.6 * ((i * 0.61) % 1)),
+            angle: i * 1.9, speed: 0.55 + (i % 3) * 0.18,
+            state: "swim", stateT: 0, respawnAt: 0,
+          };
+        });
+        const bobber = new THREE.Group();
+        {
+          const ball = new THREE.Mesh(
+            new THREE.SphereGeometry(0.09, 12, 10),
+            new THREE.MeshStandardMaterial({ color: 0xfdf6e3, roughness: 0.6 }),
+          );
+          const ring = new THREE.Mesh(
+            new THREE.RingGeometry(0.14, 0.2, 20),
             new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide }),
           );
-          ripple.rotation.x = -Math.PI / 2;
-          ripple.position.set(s.x, inRiver ? 0.07 : -0.34, s.z);
-          gameRoot.add(ripple);
-          return { x: s.x, z: s.z, ripple, taken: false, respawnAt: 0, phase: i * 1.7 };
-        });
-        let fishing: { spot: FishSpot; endAt: number } | null = null;
+          ring.rotation.x = -Math.PI / 2;
+          ring.position.y = -0.04;
+          bobber.add(ball, ring);
+        }
+        bobber.visible = false;
+        gameRoot.add(bobber);
+        let luredFish: SwimFish | null = null;
         const toolAnchor = new THREE.Vector3();
 
         // ---------- Catchable Mint dragonflies ----------
@@ -781,32 +809,64 @@ export default function MapleCove() {
         const interiorLight = new THREE.PointLight(0xffd9a0, 30, 14, 2);
         interiorLight.position.set(0, 2.6, 0);
         interiorRoot.add(interiorLight);
-        let interiorReady = false;
         let insideDoor: (typeof DOORS)[number] | null = null;
         let doorCooldown = 0;
-        // Mint world gaussian splat (SparkJS paged RAD stream) — the shared
-        // "template house" room behind every door. Streamed from Mint CDN per
-        // the world runtime manifest (integrationMode: remote_stream).
-        const INTERIOR_SPLAT_URL = "https://cdn.mint.gg/rad/prehistoric-cave-home-68a2597309f7e409-lod.rad";
-        void (async () => {
-          try {
-            const { SparkRenderer, SplatMesh } = await import("@sparkjsdev/spark");
-            scene.add(new SparkRenderer({ renderer }));
-            const splat = new SplatMesh({ url: INTERIOR_SPLAT_URL });
-            await splat.initialized;
+        // Every door leads into its OWN Mint world gaussian splat (SparkJS
+        // paged RAD, integrationMode: remote_stream), loaded lazily on first
+        // entry so the 40MB+ streams only start when a player steps inside.
+        const INTERIOR_WORLDS: Record<string, string> = {
+          own: "https://cdn.mint.gg/rad/prehistoric-cave-home-68a2597309f7e409-lod.rad",
+          yellow: "https://cdn.mint.gg/rad/flintstones-stegosaurus-home-8d12bd231db84843-lod.rad",
+          coral: "https://cdn.mint.gg/rad/triceratops-cave-home-3bddffa781b1c3b4-lod.rad",
+          shop: "https://cdn.mint.gg/rad/stone-age-general-store-f19af1bb663ca7bf-lod.rad",
+          museum: "", // bone museum hall — world final blocked on Mint credits top-up
+        };
+        const VISTA_URL = "https://cdn.mint.gg/rad/prehistoric-lagoon-valley-8f1fdd20cf2c997a-lod.rad";
+        const interiorSplats = new Map<string, THREE.Object3D>();
+        let sparkModule: Promise<typeof import("@sparkjsdev/spark") | null> | null = null;
+        const loadSpark = () => {
+          sparkModule ??= import("@sparkjsdev/spark")
+            .then((mod) => {
+              scene.add(new mod.SparkRenderer({ renderer }));
+              return mod;
+            })
+            .catch((error) => {
+              console.warn("Spark splat renderer unavailable:", error);
+              return null;
+            });
+          return sparkModule;
+        };
+        const showInterior = (key: string) => {
+          interiorSplats.forEach((splat, k) => { splat.visible = k === key; });
+          if (interiorSplats.has(key) || !INTERIOR_WORLDS[key]) return;
+          void loadSpark().then((mod) => {
+            if (!mod || disposed || interiorSplats.has(key)) return;
+            const splat = new mod.SplatMesh({ url: INTERIOR_WORLDS[key] });
             splat.quaternion.set(1, 0, 0, 0); // splat convention: 180° X flip
             splat.position.set(0, 1.5, 0);
+            interiorSplats.set(key, splat);
             interiorRoot.add(splat);
             interiorFloor.visible = false;
-            interiorReady = true;
             if (new URLSearchParams(location.search).has("qa")) {
               (window as unknown as Record<string, unknown>).__splat = splat;
             }
-          } catch (error) {
-            // Doors stay "being furnished" — flagged in the handoff notes.
-            console.warn("Splat interior unavailable:", error);
-          }
-        })();
+          });
+        };
+        // Distant prehistoric scenery: a Mint world splat wrapped around the
+        // island, sunk low so only its ridges and volcano rise past the sea.
+        if (VISTA_URL) {
+          void loadSpark().then((mod) => {
+            if (!mod || disposed) return;
+            const vista = new mod.SplatMesh({ url: VISTA_URL });
+            vista.quaternion.set(1, 0, 0, 0);
+            vista.scale.setScalar(14);
+            vista.position.set(0, -3.5, 0);
+            gameRoot.add(vista);
+            if (new URLSearchParams(location.search).has("qa")) {
+              (window as unknown as Record<string, unknown>).__vista = vista;
+            }
+          });
+        }
 
         // ---------- Game state ----------
         let phase: Phase = "ready";
@@ -909,12 +969,13 @@ export default function MapleCove() {
           fireworks.forEach((f) => scene.remove(f.points));
           fireworks.length = 0;
           // New-mechanic state resets.
-          fishing = null;
+          luredFish = null;
+          bobber.visible = false;
           netFlashT = 0;
-          fishSpots.forEach((spot) => {
-            spot.taken = false;
-            spot.respawnAt = 0;
-            spot.ripple.visible = true;
+          swimFish.forEach((fish) => {
+            fish.state = "swim";
+            fish.obj.visible = true;
+            fish.respawnAt = 0;
           });
           catchableBugs.forEach((bug) => {
             bug.caught = false;
@@ -1050,6 +1111,7 @@ export default function MapleCove() {
             player: playerRoot,
             pressed,
             villagers: villagerRuntimes,
+            fish: swimFish,
             state: () => ({ phase, running, coins, houseBuilt, inside: insideDoor?.key ?? null, carried: [...carried] }),
           };
         }
@@ -1144,7 +1206,7 @@ export default function MapleCove() {
         const bridgeY = (x: number, z: number) => {
           if (x > RIVER_X0 - 0.7 && x < RIVER_X1 + 0.7 && Math.abs(z - BRIDGE_Z) < BRIDGE_HALF + 0.4) {
             const t = THREE.MathUtils.clamp((x - (RIVER_X0 - 0.7)) / (RIVER_X1 - RIVER_X0 + 1.4), 0, 1);
-            return Math.sin(Math.PI * t) * 1.05;
+            return Math.sin(Math.PI * t) * 1.35;
           }
           return 0;
         };
@@ -1154,6 +1216,7 @@ export default function MapleCove() {
           doorCooldown = 1.2;
           gameRoot.visible = false;
           interiorRoot.visible = true;
+          showInterior(door.key);
           playerRoot.position.set(0, INTERIOR_Y, 0.4);
           playerRoot.rotation.y = Math.PI;
           toast(`Welcome inside ${door.label} — walk back to the door to leave`);
@@ -1255,7 +1318,7 @@ export default function MapleCove() {
               for (const door of DOORS) {
                 if (door.key === "own" && !houseBuilt) continue;
                 if (Math.hypot(door.x - playerRoot.position.x, door.z - playerRoot.position.z) < 1.25) {
-                  if (!interiorReady) {
+                  if (!INTERIOR_WORLDS[door.key]) {
                     toast(`${door.label} is still being furnished…`);
                     doorCooldown = 3;
                   } else {
@@ -1330,45 +1393,88 @@ export default function MapleCove() {
             }
           });
 
-          // Fishing: stand by a ripple to cast; the fish arcs onto the bank.
-          if (!fishing) {
-            fishSpots.forEach((spot) => {
-              spot.ripple.scale.setScalar(1 + Math.sin(elapsed * 2 + spot.phase) * 0.12);
-              (spot.ripple.material as THREE.MeshBasicMaterial).opacity = 0.36 + Math.sin(elapsed * 2 + spot.phase) * 0.14;
-              if (spot.taken) {
-                if (spot.respawnAt > 0 && elapsed >= spot.respawnAt) {
-                  spot.taken = false;
-                  spot.ripple.visible = true;
-                }
-                return;
+          // Fish wander their water zones. The rod comes out near one; standing
+          // still casts a bobber; the fish is lured in — move and it flees.
+          let nearestFish: SwimFish | null = null;
+          let nearestFishD = Infinity;
+          swimFish.forEach((fish) => {
+            if (fish.state === "gone") {
+              if (fish.respawnAt > 0 && elapsed >= fish.respawnAt) {
+                fish.state = "swim";
+                fish.obj.visible = true;
+                fish.x = THREE.MathUtils.lerp(fish.zone.x0, fish.zone.x1, 0.15 + 0.7 * Math.abs(Math.sin(elapsed * 7 + fish.speed)));
+                fish.z = THREE.MathUtils.lerp(fish.zone.z0, fish.zone.z1, 0.15 + 0.7 * Math.abs(Math.cos(elapsed * 5 + fish.speed)));
               }
-              if (!running || insideDoor || carried.length >= MAX_CARRY) return;
-              const d = Math.hypot(spot.x - playerRoot.position.x, spot.z - playerRoot.position.z);
-              if (d < 2.2) {
-                fishing = { spot, endAt: elapsed + 1.5 };
-                toast("🐟 Something's nibbling…");
-              }
-            });
-          } else {
-            const spot = fishing.spot;
-            const d = Math.hypot(spot.x - playerRoot.position.x, spot.z - playerRoot.position.z);
-            if (d > 3.4 || insideDoor || !running) {
-              fishing = null;
-            } else if (elapsed >= fishing.endAt) {
-              spot.taken = true;
-              spot.ripple.visible = false;
-              spot.respawnAt = elapsed + 24;
-              play("splash");
-              dropItem(
-                "fish", spot.x, spot.z,
-                playerRoot.position.x + (playerRoot.position.x - spot.x) * 0.3,
-                playerRoot.position.z + (playerRoot.position.z - spot.z) * 0.3,
-              );
-              fishing = null;
+              return;
             }
+            if (fish.state === "swim") {
+              fish.angle += Math.sin(elapsed * 0.7 + fish.speed * 13) * dt * 1.2;
+              fish.x += Math.cos(fish.angle) * fish.speed * dt;
+              fish.z += Math.sin(fish.angle) * fish.speed * dt;
+              if (fish.x < fish.zone.x0 || fish.x > fish.zone.x1) {
+                fish.angle = Math.PI - fish.angle;
+                fish.x = THREE.MathUtils.clamp(fish.x, fish.zone.x0, fish.zone.x1);
+              }
+              if (fish.z < fish.zone.z0 || fish.z > fish.zone.z1) {
+                fish.angle = -fish.angle;
+                fish.z = THREE.MathUtils.clamp(fish.z, fish.zone.z0, fish.zone.z1);
+              }
+            } else if (fish.state === "lured") {
+              if (moving || insideDoor || !running) {
+                fish.state = "gone";
+                fish.obj.visible = false;
+                fish.respawnAt = elapsed + 8;
+                bobber.visible = false;
+                luredFish = null;
+                toast("💨 It got away!");
+              } else {
+                const dxb = bobber.position.x - fish.x;
+                const dzb = bobber.position.z - fish.z;
+                const db = Math.hypot(dxb, dzb);
+                fish.angle = Math.atan2(dzb, dxb);
+                if (db > 0.22) {
+                  fish.x += (dxb / db) * 1.15 * dt;
+                  fish.z += (dzb / db) * 1.15 * dt;
+                } else {
+                  play("splash");
+                  fish.state = "gone";
+                  fish.obj.visible = false;
+                  fish.respawnAt = elapsed + 20;
+                  bobber.visible = false;
+                  luredFish = null;
+                  dropItem(
+                    "fish", fish.x, fish.z,
+                    playerRoot.position.x + (playerRoot.position.x - fish.x) * 0.25,
+                    playerRoot.position.z + (playerRoot.position.z - fish.z) * 0.25,
+                  );
+                }
+              }
+            }
+            fish.obj.position.set(fish.x, fish.zone.y + Math.sin(elapsed * 3 + fish.speed * 20) * 0.02, fish.z);
+            fish.obj.rotation.y = Math.atan2(Math.cos(fish.angle), Math.sin(fish.angle));
+            if (fish.state !== "gone" && !insideDoor) {
+              const d = Math.hypot(fish.x - playerRoot.position.x, fish.z - playerRoot.position.z);
+              if (d < nearestFishD) {
+                nearestFishD = d;
+                nearestFish = fish;
+              }
+            }
+          });
+          if (running && !insideDoor && !luredFish && nearestFish && nearestFishD < CAST_RANGE && !moving && carried.length < MAX_CARRY) {
+            const target: SwimFish = nearestFish;
+            luredFish = target;
+            target.state = "lured";
+            target.stateT = 0;
+            bobber.position.set(
+              THREE.MathUtils.lerp(playerRoot.position.x, target.x, 0.55),
+              target.zone.y + 0.05,
+              THREE.MathUtils.lerp(playerRoot.position.z, target.z, 0.55),
+            );
+            bobber.visible = true;
+            toast("🎣 Hold still… something's coming!");
           }
-          rodProp.visible = Boolean(fishing);
-          if (fishing) {
+          rodProp.visible = Boolean(luredFish) || nearestFishD < ROD_OUT_RANGE;
+          if (rodProp.visible) {
             playerRoot.updateMatrixWorld(true);
             rightHandBone.getWorldPosition(toolAnchor);
             rodProp.position.copy(toolAnchor);
@@ -1376,7 +1482,9 @@ export default function MapleCove() {
             rodProp.rotateX(-0.85);
           }
 
-          // Catchable dragonflies orbit the meadows; walk close to net them.
+          // Catchable dragonflies orbit the meadows; the net comes out nearby,
+          // walk close to swing and store the catch.
+          let nearestBugD = Infinity;
           catchableBugs.forEach((bug) => {
             if (bug.caught) {
               if (bug.respawnAt > 0 && elapsed >= bug.respawnAt) {
@@ -1394,6 +1502,7 @@ export default function MapleCove() {
             bug.root.rotation.y = -a + Math.PI / 2;
             if (!running || insideDoor || carried.length >= MAX_CARRY) return;
             const d = Math.hypot(bug.root.position.x - playerRoot.position.x, bug.root.position.z - playerRoot.position.z);
+            if (d < nearestBugD) nearestBugD = d;
             if (d < 1.35) {
               bug.caught = true;
               bug.root.visible = false;
@@ -1408,13 +1517,15 @@ export default function MapleCove() {
             }
           });
           netFlashT = Math.max(0, netFlashT - dt);
-          netProp.visible = netFlashT > 0;
+          // Net is held whenever a catchable dragonfly is nearby (AC-style
+          // tools-out), and swings during the catch flash. Rod wins if both.
+          netProp.visible = !rodProp.visible && (netFlashT > 0 || nearestBugD < 4.5);
           if (netProp.visible) {
             playerRoot.updateMatrixWorld(true);
             rightHandBone.getWorldPosition(toolAnchor);
             netProp.position.copy(toolAnchor);
             netProp.quaternion.copy(playerRoot.quaternion);
-            netProp.rotateZ(Math.sin(netFlashT * 14) * 0.5);
+            netProp.rotateZ(netFlashT > 0 ? Math.sin(netFlashT * 14) * 0.9 : 0.25);
           }
 
           // Soil patches: plant carried fruit, saplings grow into real trees.
@@ -1596,8 +1707,8 @@ export default function MapleCove() {
             desiredCamera.set(playerRoot.position.x * 0.4, py + 2.7, playerRoot.position.z + 4.4);
             cameraTarget.set(0, py + 1.1, 0);
           } else {
-            desiredCamera.set(playerRoot.position.x, py + (skyward ? 4.6 : 6.6), playerRoot.position.z + (skyward ? 11.5 : 9.6));
-            cameraTarget.set(playerRoot.position.x, py + (skyward ? 7.5 : 1.0), playerRoot.position.z - (skyward ? 9 : 2));
+            desiredCamera.set(playerRoot.position.x, py + (skyward ? 4.6 : 6.0), playerRoot.position.z + (skyward ? 11.5 : 9.9));
+            cameraTarget.set(playerRoot.position.x, py + (skyward ? 7.5 : 1.7), playerRoot.position.z - (skyward ? 9 : 2.6));
           }
           camera.position.lerp(desiredCamera, 1 - Math.pow(0.001, dt));
           camera.lookAt(cameraTarget);
