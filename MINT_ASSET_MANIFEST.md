@@ -52,3 +52,26 @@ Title image ships on a solid background; keyed to alpha locally (PIL corner-samp
 
 - Island terrain, beach, river and water planes (procedural three.js geometry — Mint worlds export as splats, not playable meshes)
 - Ambient particles: butterflies, falling leaves, gulls, clouds, fireworks (procedural primitives, same approach as prior showcase games)
+
+---
+
+# Boulder Cove re-theme (2026-07-18)
+
+Dino/Flintstones re-theme. New packs (all in Mint):
+
+| Pack / asset | Asset ID | Chat |
+| --- | --- | --- |
+| Boulder Cove Characters (cave kid + 4 dinos) | `th71mav8s1m2h6k10bg2322y3n8ar96h` | https://mint.gg/chat/ph739bcczm5sexzhxvnbazb7e18armwq |
+| Boulder Cove Buildings (6, Flintstones style) | `th70mejsv0ay1ggehmvh75e4sn8arnd7` | https://mint.gg/chat/ph700bsz5x9zgcrs03b4aryv2n8as81n |
+| Boulder Cove Props (20 incl. fish/dragonfly/rod/net/sapling) | `th730pf3406d8bmq9r2ztpdgs98arwp6` | https://mint.gg/chat/ph74h9s40cavx0sz6hxq0vfx4d8arn90 |
+| Boulder Cove BGM (60s) | `xd7341ka61gpqtv3jwg7dmeess8asewq` | https://mint.gg/chat/ph7bbaqryk6zpytkmfskjbx42d8as521 |
+| Fishing Splash SFX | `xd7erfpve9dkcpcpvn0y7s21418arwjn` | https://mint.gg/chat/ph78eb0w1xe467bbaz8e1dcseh8ask3r |
+| Net Swoosh SFX | `xd79jmpj6ncjyekvywt0n2nb4n8asww0` | https://mint.gg/chat/ph78x0tv25k7xr185faw751ty18ast1s |
+| Boulder Cove Title (image) | `xn7d8b18k6hsxchesbhkyyq3ms8ar26c` | https://mint.gg/chat/ph7axpjbqq9wsm1pp6zxkyrzgd8ar6fc |
+| Flintstones Cave Home (world, splat interior) | `j977zrhg7746far5nk1486q5hx8ash92` | https://mint.gg/chat/ph7fwsw4pg61k4pkcaeev83sg58asamj |
+
+Rig batches: Cave Kid `w57143e8vdaj4bgv2jw0gfhpk58as3h0` (Idle 0 / run 659 / carry 611), Triceratops `w57cg57enxgzx6cdfkt19ckqen8arjzx` (chat 56), Stegosaurus `w571ppnekbm4j933ghnx3txxfs8as1kp` (listen 47), T-Rex `w57f1meyzt436j5a5s0bk9vt4d8asr0a` (wave 290), Ankylosaurus `w57842xjcrbb11tqaf31w7tr198arb5q` (agree 25).
+
+Props pack first pass: 14/20 final; regeneration running for Bone Mailbox, Ammonite Shell, Dino Egg, Bone Signpost, Web Bug Net, Fruit Sapling.
+
+New mechanics: fishing (ripple spots), bug catching (Mint dragonflies), fruit planting (soil patches grow Mint trees). Fossil digging deliberately omitted per client direction.

@@ -4,15 +4,17 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import { MAPLE_MINT_ASSETS as ASSETS } from "./mapleMintAssets";
 
-type Phase = "loading" | "ready" | "playing" | "celebrating" | "won" | "ended" | "error";
+type Phase = "loading" | "ready" | "playing" | "celebrating" | "won" | "error";
 type Direction = "forward" | "back" | "left" | "right";
-type ItemType = "apple" | "orange" | "shell" | "parcel";
+// "apple" = Boulderberry, "orange" = Spikefruit, "parcel" = lost Dino Egg.
+type ItemType = "apple" | "orange" | "shell" | "parcel" | "fish" | "bug";
 type RequestChip = { villager: string; type: ItemType; count: number };
 type Ui = {
   phase: Phase;
   coins: number;
   carried: ItemType[];
-  time: number;
+  houseBuilt: boolean;
+  inside: boolean;
   sound: boolean;
   loading: string;
   toast: string;
@@ -21,78 +23,115 @@ type Ui = {
   titleOk: boolean;
 };
 
-const DAY_TIME = 170;
+const DAY_CYCLE = 240; // seconds per looping day-night cycle (ambience only, no fail state)
 const MAX_CARRY = 3;
-const FUND_GOAL = 420;
-const ITEM_EMOJI: Record<ItemType, string> = { apple: "🍎", orange: "🍊", shell: "🐚", parcel: "🎁" };
+const HOUSE_COST = 420;
+const ITEM_EMOJI: Record<ItemType, string> = { apple: "🍒", orange: "🍊", shell: "🐚", parcel: "🥚", fish: "🐟", bug: "🦋" };
+const ITEM_NAME: Record<ItemType, string> = { apple: "boulderberry", orange: "spikefruit", shell: "ammonite", parcel: "dino egg", fish: "fish", bug: "dragonfly" };
 
 const INITIAL_UI: Ui = {
   phase: "loading",
   coins: 0,
   carried: [],
-  time: DAY_TIME,
+  houseBuilt: false,
+  inside: false,
   sound: true,
-  loading: "Sailing to Maple Cove…",
+  loading: "Paddling to Boulder Cove…",
   toast: "",
   banter: null,
   requests: [],
   titleOk: true,
 };
 
+// Each villager stands out front of their own building, facing the paths.
 const VILLAGERS = [
   {
-    key: "cat", x: -3.2, z: 5.6, yaw: 2.62,
+    key: "triceratops", x: 3.4, z: 10.2, yaw: -2.68,
     chatter: [
-      "The plaza smells like fresh apples today!",
-      "I reorganized my whole cottage. Twice.",
+      "Welcome to my coral hut — three horns, zero worries!",
+      "I re-stacked every boulder in my hut. Twice.",
     ],
     thanks: [
-      "Purr-fect! Straight to the festival fund!",
-      "You're the best neighbor Maple Cove ever had!",
+      "Tri-riffic! That goes toward your hut!",
+      "You're the best neighbor Boulder Cove ever hatched!",
     ],
   },
   {
-    key: "frog", x: 8.6, z: -7.6, yaw: -0.85,
+    key: "stegosaurus", x: -11.8, z: -3.6, yaw: 1.16,
     chatter: [
-      "The river sounds extra sparkly this morning.",
-      "I only trust bridges I can nap under.",
+      "My yellow hut catches the best morning sun on my plates.",
+      "A dragonfly napped on my plates and so did I.",
     ],
     thanks: [
-      "Ribbit-riffic! The fund is growing!",
-      "Splendid! Tonight's festival will be legendary!",
+      "Stego-splendid! Your hut fund is growing!",
+      "Plate-tastic! You'll be our neighbor in no time!",
     ],
   },
   {
-    key: "duck", x: 1.5, z: 21, yaw: -3.07,
+    key: "trex", x: 16.6, z: -4.4, yaw: -1.24,
     chatter: [
-      "The tide brought in new shells overnight!",
-      "One day I'll sail past those little islands.",
+      "I curate the bone museum — those ribs are my great-uncle's!",
+      "Tiny arms, big dreams. That's the curator's motto.",
     ],
     thanks: [
-      "Quack-tastic! Adding it to the fund!",
-      "Shell yeah! The festival is nearly funded!",
+      "ROAR-some! Adding it to your hut fund!",
+      "Dino-mite! Your hut is nearly funded!",
     ],
   },
   {
-    key: "bear", x: -3.4, z: -11.8, yaw: 0.28,
+    key: "ankylosaurus", x: -2.4, z: -10.6, yaw: 0.28,
     chatter: [
-      "The shop's shelves are nearly empty — good sign!",
-      "Festival lanterns! Fresh from the back room!",
+      "Keep the goods coming and I'll have your hut stacked in no time!",
+      "The shop shelves are nearly empty — good sign!",
     ],
     thanks: [
-      "Wonderful! I'll log it in the festival book!",
-      "Maple Cove thanks you, little helper!",
+      "Rock solid! I'll log it in the building book!",
+      "Boulder Cove thanks you, little helper!",
     ],
   },
 ] as const;
 
 const BUILDING_PLACEMENTS = [
-  { key: "playerCottage", x: -9, z: 12, size: 5.8, yaw: 2.5, blocker: 2.0 },
-  { key: "yellowCottage", x: -16, z: -7, size: 5.4, yaw: 1.16, blocker: 1.9 },
-  { key: "coralCottage", x: 7, z: 14, size: 5.4, yaw: -2.68, blocker: 1.9 },
+  { key: "yellowCottage", x: -16, z: -7, size: 5.4, yaw: 1.16, blocker: 1.6 },
+  { key: "coralCottage", x: 7, z: 14, size: 5.4, yaw: -2.68, blocker: 1.6 },
   { key: "shop", x: -4, z: -14, size: 6.4, yaw: 0.28, blocker: 2.2 },
   { key: "museum", x: 20, z: -7, size: 7.8, yaw: -1.24, blocker: 2.6 },
 ] as const;
+
+// The player's future cottage: an empty plot until the house fund is full.
+const PLOT = { x: -9, z: 12, size: 5.8, yaw: 2.5, blocker: 2.0 } as const;
+
+// Door trigger points (building position + forward toward the door face).
+// exitX/exitZ sit ~1.8 units out along the door's radial so leaving a house
+// never lands back inside the door trigger (which caused a revolving door).
+const DOORS = [
+  { key: "yellow", x: -13.8, z: -6.0, exitX: -12.0, exitZ: -5.2, label: "Spike's hut" },
+  { key: "coral", x: 5.9, z: 11.8, exitX: 5.1, exitZ: 10.2, label: "Trixie's hut" },
+  { key: "own", x: -7.3, z: 9.9, exitX: -6.2, exitZ: 8.5, label: "your hut" },
+] as const;
+
+// Fishing ripples sit just off the bank; the player fishes from dry land.
+const FISHING_SPOTS = [
+  { x: 12.9, z: 6.5 },
+  { x: 12.9, z: -9.5 },
+  { x: 2, z: 29.6 },
+  { x: -28.6, z: 4 },
+] as const;
+
+// Catchable Mint dragonflies orbit these meadow anchors.
+const DRAGONFLY_SPOTS = [
+  { x: -5, z: 8 },
+  { x: 17.5, z: 4 },
+  { x: 2, z: -9 },
+] as const;
+
+// Soft soil patches where carried fruit can be planted to grow a new tree.
+const SOIL_SPOTS = [
+  { x: -14, z: 8 },
+  { x: 3, z: 17.5 },
+  { x: 21, z: 8.5 },
+] as const;
+const TREE_GROW_SECONDS = 45;
 
 const PROP_PLACEMENTS = [
   { key: "well", x: 0, z: -3, size: 2.6, yaw: 0, blocker: 1.25 },
@@ -109,6 +148,10 @@ const PROP_PLACEMENTS = [
   { key: "fence", x: -13.4, z: 6.5, size: 2.2, yaw: 0.6, blocker: 0.9 },
   { key: "fence", x: -7.9, z: -11.9, size: 2.2, yaw: 0.3, blocker: 0.9 },
   { key: "fence", x: -0.4, z: -16.1, size: 2.2, yaw: -0.2, blocker: 0.9 },
+  { key: "giantFern", x: -19, z: -3, size: 2.2, yaw: 0.5, blocker: 0.6 },
+  { key: "giantFern", x: 10.2, z: 10.6, size: 2.2, yaw: -1.1, blocker: 0.6 },
+  { key: "giantFern", x: -8.5, z: -17.5, size: 2.2, yaw: 2.0, blocker: 0.6 },
+  { key: "giantFern", x: 23.5, z: 3.5, size: 2.2, yaw: 0.9, blocker: 0.6 },
   { key: "tulips", x: -5, z: 8, size: 1.1, yaw: 0.4, blocker: 0 },
   { key: "tulips", x: 6, z: 9.5, size: 1.1, yaw: 1.4, blocker: 0 },
   { key: "tulips", x: -8, z: -6, size: 1.1, yaw: 2.2, blocker: 0 },
@@ -144,7 +187,7 @@ const PARCELS = [
 const RIVER_X0 = 10.4;
 const RIVER_X1 = 15.4;
 const BRIDGE_Z = -1.5;
-const BRIDGE_HALF = 2.3;
+const BRIDGE_HALF = 1.5; // deck width — rails keep the player on the planks
 const ISLAND_WALK_RADIUS = 28.4;
 
 type DayStop = { u: number; sky: number; sun: number; sunI: number; hemi: number };
@@ -158,7 +201,7 @@ const DAY_STOPS: DayStop[] = [
 
 export default function MapleCove() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const controllerRef = useRef<{ start: () => void; toggleSound: () => void; setDirection: (d: Direction, v: boolean) => void } | null>(null);
+  const controllerRef = useRef<{ start: () => void; resume: () => void; toggleSound: () => void; setDirection: (d: Direction, v: boolean) => void } | null>(null);
   const [ui, setUi] = useState<Ui>(INITIAL_UI);
 
   useEffect(() => {
@@ -343,7 +386,7 @@ export default function MapleCove() {
         gameRoot.add(foam);
 
         // Distant islets so the horizon is not empty water.
-        for (const [ix, iz, s] of [[-70, -45, 9], [62, -60, 7], [78, 30, 11], [-58, 55, 6]] as const) {
+        for (const [ix, iz, s] of [[62, -60, 7], [78, 30, 11], [-58, 55, 6]] as const) {
           const islet = new THREE.Group();
           const mound = new THREE.Mesh(
             new THREE.SphereGeometry(s, 20, 14, 0, Math.PI * 2, 0, Math.PI / 2),
@@ -352,6 +395,28 @@ export default function MapleCove() {
           islet.add(mound);
           islet.position.set(ix, -0.5, iz);
           gameRoot.add(islet);
+        }
+
+        // A distant smoking volcano sells the prehistoric horizon.
+        const volcano = new THREE.Mesh(
+          new THREE.ConeGeometry(16, 20, 24),
+          new THREE.MeshStandardMaterial({ color: 0x7a6a5e, roughness: 1 }),
+        );
+        volcano.position.set(-72, 8.5, -48);
+        gameRoot.add(volcano);
+        const volcanoGlow = new THREE.Mesh(
+          new THREE.ConeGeometry(4.2, 3.4, 20),
+          new THREE.MeshBasicMaterial({ color: 0xff8a4d }),
+        );
+        volcanoGlow.position.set(-72, 18.4, -48);
+        gameRoot.add(volcanoGlow);
+        const smokePuffs: THREE.Mesh[] = [];
+        const smokeMat = new THREE.MeshBasicMaterial({ color: 0xcfc4bd, transparent: true, opacity: 0.55 });
+        for (let i = 0; i < 5; i += 1) {
+          const puff = new THREE.Mesh(new THREE.SphereGeometry(2.4 + i * 0.5, 10, 8), smokeMat);
+          puff.position.set(-72, 20 + i * 3.4, -48);
+          gameRoot.add(puff);
+          smokePuffs.push(puff);
         }
 
         // ---------- Mint buildings & props ----------
@@ -372,6 +437,19 @@ export default function MapleCove() {
         bridge.rotation.y = Math.PI / 2;
         bridge.position.set((RIVER_X0 + RIVER_X1) / 2, 0, BRIDGE_Z);
         contentRoot.add(bridge);
+
+        // The player's own cottage: hidden on its plot until the fund is full.
+        const ownHouse = fitMax(sceneFor(ASSETS.buildings.playerCottage), PLOT.size);
+        ownHouse.position.set(PLOT.x, 0, PLOT.z);
+        ownHouse.rotation.y = PLOT.yaw;
+        ownHouse.visible = false;
+        contentRoot.add(ownHouse);
+        const plotSign = fitMax(sceneFor(ASSETS.props.signpost), 2.2);
+        plotSign.position.set(PLOT.x, 0, PLOT.z);
+        plotSign.rotation.y = PLOT.yaw;
+        contentRoot.add(plotSign);
+        const plotBlocker = { x: PLOT.x, z: PLOT.z, radius: 0.6 };
+        blockers.push(plotBlocker);
 
         const lanternLights: THREE.PointLight[] = [];
         for (const p of PROP_PLACEMENTS) {
@@ -413,7 +491,8 @@ export default function MapleCove() {
         playerRoot.add(playerModel);
         playerRoot.position.set(0, 0, 5);
         playerRoot.rotation.y = Math.PI;
-        contentRoot.add(playerRoot);
+        // Lives at scene root (not inside gameRoot) so it stays visible indoors.
+        scene.add(playerRoot);
 
         let leftHand: THREE.Bone | null = null;
         let rightHand: THREE.Bone | null = null;
@@ -482,7 +561,21 @@ export default function MapleCove() {
           orange: fitMax(sceneFor(ASSETS.props.orange), 0.42),
           shell: fitMax(sceneFor(ASSETS.props.shell), 0.5),
           parcel: fitMax(sceneFor(ASSETS.props.parcel), 0.55),
+          fish: fitMax(sceneFor(ASSETS.props.fish), 0.58),
+          bug: fitMax(sceneFor(ASSETS.props.dragonfly), 0.5),
         };
+
+        // Stone-age tools appear in the player's hand during fishing / bug catches.
+        const rodProp = fitMax(sceneFor(ASSETS.props.fishingRod), 1.15);
+        rodProp.visible = false;
+        prepare(rodProp);
+        scene.add(rodProp);
+        const netProp = fitMax(sceneFor(ASSETS.props.bugNet), 1.05);
+        netProp.visible = false;
+        prepare(netProp);
+        scene.add(netProp);
+        const saplingTemplate = fitHeight(sceneFor(ASSETS.props.sapling), 0.8);
+        let netFlashT = 0;
 
         type GroundItem = {
           obj: THREE.Object3D; type: ItemType; state: "drop" | "idle";
@@ -515,9 +608,53 @@ export default function MapleCove() {
         type ShellSpot = { x: number; z: number; respawnAt: number; filled: boolean };
         const shellSpots: ShellSpot[] = SHELL_SPOTS.map(([x, z]) => ({ x, z, respawnAt: 0, filled: false }));
 
+        // ---------- Fishing spots (ripples in river & sea) ----------
+        type FishSpot = { x: number; z: number; ripple: THREE.Mesh; taken: boolean; respawnAt: number; phase: number };
+        const fishSpots: FishSpot[] = FISHING_SPOTS.map((s, i) => {
+          const inRiver = s.x > RIVER_X0 - 1 && s.x < RIVER_X1 + 1 && Math.abs(s.z) < 29;
+          const ripple = new THREE.Mesh(
+            new THREE.RingGeometry(0.34, 0.58, 24),
+            new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide }),
+          );
+          ripple.rotation.x = -Math.PI / 2;
+          ripple.position.set(s.x, inRiver ? 0.07 : -0.34, s.z);
+          gameRoot.add(ripple);
+          return { x: s.x, z: s.z, ripple, taken: false, respawnAt: 0, phase: i * 1.7 };
+        });
+        let fishing: { spot: FishSpot; endAt: number } | null = null;
+        const toolAnchor = new THREE.Vector3();
+
+        // ---------- Catchable Mint dragonflies ----------
+        type CatchableBug = { root: THREE.Object3D; anchor: { x: number; z: number }; caught: boolean; respawnAt: number; phase: number };
+        const catchableBugs: CatchableBug[] = DRAGONFLY_SPOTS.map((s, i) => {
+          const root = templates.bug.clone(true);
+          root.scale.multiplyScalar(1.25);
+          contentRoot.add(root);
+          return { root, anchor: s, caught: false, respawnAt: 0, phase: i * 2.1 };
+        });
+
+        // ---------- Soil patches: plant carried fruit, grow a new tree ----------
+        type SoilSpot = {
+          x: number; z: number; state: "empty" | "growing" | "grown";
+          kind: "apple" | "orange" | null; plantedAt: number;
+          marker: THREE.Mesh; sapling: THREE.Object3D | null;
+        };
+        const soilSpots: SoilSpot[] = SOIL_SPOTS.map((s) => {
+          const marker = new THREE.Mesh(
+            new THREE.CircleGeometry(0.95, 24),
+            new THREE.MeshStandardMaterial({ color: 0x8a6b4d, roughness: 1 }),
+          );
+          marker.rotation.x = -Math.PI / 2;
+          marker.position.set(s.x, 0.02, s.z);
+          contentRoot.add(marker);
+          return { x: s.x, z: s.z, state: "empty", kind: null, plantedAt: 0, marker, sapling: null };
+        });
+        type PlantedGrowth = { tree: THREE.Object3D; blocker: { x: number; z: number; radius: number }; spot: SoilSpot };
+        const plantedGrowth: PlantedGrowth[] = [];
+
         // ---------- Carried items ----------
         const carriedRoot = new THREE.Group();
-        contentRoot.add(carriedRoot);
+        scene.add(carriedRoot);
         let carried: ItemType[] = [];
         let carriedParcelAddressee: number | null = null;
         const refreshCarried = () => {
@@ -629,16 +766,59 @@ export default function MapleCove() {
           fireworks.push({ points, velocities, life: 1.6 });
         };
 
+        // ---------- Interior ("template house") mode ----------
+        const INTERIOR_Y = 200;
+        const interiorRoot = new THREE.Group();
+        interiorRoot.position.set(0, INTERIOR_Y, 0);
+        interiorRoot.visible = false;
+        scene.add(interiorRoot);
+        const interiorFloor = new THREE.Mesh(
+          new THREE.CircleGeometry(3.2, 32),
+          new THREE.MeshStandardMaterial({ color: 0xc9a97a, roughness: 0.9 }),
+        );
+        interiorFloor.rotation.x = -Math.PI / 2;
+        interiorRoot.add(interiorFloor);
+        const interiorLight = new THREE.PointLight(0xffd9a0, 30, 14, 2);
+        interiorLight.position.set(0, 2.6, 0);
+        interiorRoot.add(interiorLight);
+        let interiorReady = false;
+        let insideDoor: (typeof DOORS)[number] | null = null;
+        let doorCooldown = 0;
+        // Mint world gaussian splat (SparkJS paged RAD stream) — the shared
+        // "template house" room behind every door. Streamed from Mint CDN per
+        // the world runtime manifest (integrationMode: remote_stream).
+        const INTERIOR_SPLAT_URL = "https://cdn.mint.gg/rad/prehistoric-cave-home-68a2597309f7e409-lod.rad";
+        void (async () => {
+          try {
+            const { SparkRenderer, SplatMesh } = await import("@sparkjsdev/spark");
+            scene.add(new SparkRenderer({ renderer }));
+            const splat = new SplatMesh({ url: INTERIOR_SPLAT_URL });
+            await splat.initialized;
+            splat.quaternion.set(1, 0, 0, 0); // splat convention: 180° X flip
+            splat.position.set(0, 1.5, 0);
+            interiorRoot.add(splat);
+            interiorFloor.visible = false;
+            interiorReady = true;
+            if (new URLSearchParams(location.search).has("qa")) {
+              (window as unknown as Record<string, unknown>).__splat = splat;
+            }
+          } catch (error) {
+            // Doors stay "being furnished" — flagged in the handoff notes.
+            console.warn("Splat interior unavailable:", error);
+          }
+        })();
+
         // ---------- Game state ----------
         let phase: Phase = "ready";
         let running = false;
         let coins = 0;
-        let time = DAY_TIME;
         let soundOn = true;
         let elapsed = 0;
         let lastUiPush = 0;
         let celebrationEnd = 0;
         let nextFireworkAt = 0;
+        let houseBuilt = false;
+        let houseBuildT = 1;
 
         const requestChips = (): RequestChip[] =>
           villagerRuntimes
@@ -649,8 +829,8 @@ export default function MapleCove() {
           if (disposed) return;
           setUi((value) => ({
             ...value,
-            phase, coins, carried: [...carried], time, sound: soundOn,
-            loading: "Mint assets ready", requests: requestChips(), ...extra,
+            phase, coins, carried: [...carried], houseBuilt, inside: insideDoor !== null,
+            sound: soundOn, loading: "Mint assets ready", requests: requestChips(), ...extra,
           }));
         };
         const play = (key: keyof typeof audio, restart = true) => {
@@ -693,8 +873,10 @@ export default function MapleCove() {
         };
         const randomRequest = (v: VillagerRuntime) => {
           const roll = Math.random();
-          const type: ItemType = roll < 0.4 ? "apple" : roll < 0.72 ? "shell" : "orange";
-          giveRequest(v, type, type === "orange" ? 1 : Math.random() < 0.45 ? 2 : 1);
+          const type: ItemType =
+            roll < 0.26 ? "apple" : roll < 0.46 ? "shell" : roll < 0.6 ? "orange" : roll < 0.82 ? "fish" : "bug";
+          const single = type === "orange" || type === "fish" || type === "bug";
+          giveRequest(v, type, single ? 1 : Math.random() < 0.45 ? 2 : 1);
         };
 
         const resetWorld = () => {
@@ -721,26 +903,61 @@ export default function MapleCove() {
             void i;
           });
           giveRequest(villagerRuntimes[0], "apple", 2);
-          giveRequest(villagerRuntimes[2], "shell", 1);
+          giveRequest(villagerRuntimes[2], "fish", 1);
           giveRequest(villagerRuntimes[1], "orange", 1);
           villagerRuntimes[3].nextRequestAt = 24;
           fireworks.forEach((f) => scene.remove(f.points));
           fireworks.length = 0;
+          // New-mechanic state resets.
+          fishing = null;
+          netFlashT = 0;
+          fishSpots.forEach((spot) => {
+            spot.taken = false;
+            spot.respawnAt = 0;
+            spot.ripple.visible = true;
+          });
+          catchableBugs.forEach((bug) => {
+            bug.caught = false;
+            bug.respawnAt = 0;
+            bug.root.visible = true;
+          });
+          plantedGrowth.forEach((growth) => {
+            contentRoot.remove(growth.tree);
+            const bIndex = blockers.indexOf(growth.blocker);
+            if (bIndex !== -1) blockers.splice(bIndex, 1);
+            const tIndex = fruitTrees.findIndex((t) => t.root === growth.tree);
+            if (tIndex !== -1) fruitTrees.splice(tIndex, 1);
+          });
+          plantedGrowth.length = 0;
+          soilSpots.forEach((spot) => {
+            if (spot.sapling) contentRoot.remove(spot.sapling);
+            spot.sapling = null;
+            spot.state = "empty";
+            spot.kind = null;
+            spot.plantedAt = 0;
+          });
         };
 
         const begin = () => {
           phase = "playing";
           running = true;
           coins = 0;
-          time = DAY_TIME;
           elapsed = 0;
+          houseBuilt = false;
+          houseBuildT = 1;
+          ownHouse.visible = false;
+          plotSign.visible = true;
+          plotBlocker.radius = 0.6;
+          insideDoor = null;
+          interiorRoot.visible = false;
+          gameRoot.visible = true;
           playerRoot.position.set(0, 0, 5);
           playerRoot.rotation.y = Math.PI;
           resetWorld();
           audio.music.currentTime = 0;
           play("music", false);
           play("shore", false);
-          toast("Fill the festival fund before sundown!");
+          toast("Earn 420 coins helping the dinos to get your own boulder hut!");
           pushUi();
         };
 
@@ -749,7 +966,7 @@ export default function MapleCove() {
           carried.push(item.type);
           if (item.type === "parcel" && item.addressee !== undefined) {
             carriedParcelAddressee = item.addressee;
-            toast(`A lost parcel — it's addressed to ${villagerRuntimes[item.addressee].name}!`);
+            toast(`A lost dino egg — return it to ${villagerRuntimes[item.addressee].name}!`);
           } else {
             toast(`${ITEM_EMOJI[item.type]} picked up · ${carried.length}/${MAX_CARRY} in hands`);
           }
@@ -766,12 +983,18 @@ export default function MapleCove() {
         };
 
         const reachGoal = () => {
+          if (houseBuilt) return;
           phase = "celebrating";
-          running = false;
-          celebrationEnd = elapsed + 5;
+          houseBuilt = true;
+          houseBuildT = 0;
+          ownHouse.visible = true;
+          ownHouse.scale.setScalar(0.001);
+          plotSign.visible = false;
+          plotBlocker.radius = PLOT.blocker;
+          celebrationEnd = elapsed + 6;
           nextFireworkAt = 0;
           play("jingle");
-          toast("THE FESTIVAL FUND IS FULL! FIREWORKS OVER MAPLE COVE!");
+          toast("THE FUND IS FULL — MAPLE IS RAISING YOUR COTTAGE!");
           pushUi();
         };
 
@@ -788,8 +1011,8 @@ export default function MapleCove() {
             play("coin");
             play("jingle");
             banter(v.name, v.data.thanks[Math.floor(Math.random() * v.data.thanks.length)]);
-            toast("Lost parcel delivered · +80 coins!");
-            if (coins >= FUND_GOAL) reachGoal();
+            toast("Dino egg returned · +80 coins!");
+            if (coins >= HOUSE_COST) reachGoal();
             pushUi();
             return;
           }
@@ -818,7 +1041,7 @@ export default function MapleCove() {
             setBubble(v);
             toast(`${delivered} delivered · ${v.request.count} more ${ITEM_EMOJI[type]} to go`);
           }
-          if (coins >= FUND_GOAL) reachGoal();
+          if (coins >= HOUSE_COST) reachGoal();
           pushUi();
         };
 
@@ -827,11 +1050,17 @@ export default function MapleCove() {
             player: playerRoot,
             pressed,
             villagers: villagerRuntimes,
-            state: () => ({ phase, running, coins, time, carried: [...carried] }),
+            state: () => ({ phase, running, coins, houseBuilt, inside: insideDoor?.key ?? null, carried: [...carried] }),
           };
         }
+        const resume = () => {
+          phase = "playing";
+          pushUi();
+        };
+
         controllerRef.current = {
           start: begin,
+          resume,
           toggleSound: () => {
             soundOn = !soundOn;
             if (!soundOn) Object.values(audio).forEach((a) => a.pause());
@@ -874,10 +1103,9 @@ export default function MapleCove() {
             if (nearest) deliverTo(nearest);
             return;
           }
-          if (down && qa && key === "f") { time = 12; return; }
-          if (down && qa && key === "t") { time = 0.05; return; }
+          if (down && qa && key === "f") { elapsed = DAY_CYCLE / 2; return; }
           if (down && qa && key === "g") { playerRoot.position.set(18, 0, 2); return; }
-          if (down && qa && key === "y") { coins += 200; if (coins >= FUND_GOAL) reachGoal(); pushUi(); return; }
+          if (down && qa && key === "y") { coins += 200; if (coins >= HOUSE_COST) reachGoal(); pushUi(); return; }
           const direction = keyMap[key];
           if (!direction) return;
           event.preventDefault();
@@ -906,9 +1134,41 @@ export default function MapleCove() {
         pushUi();
 
         const blocked = (x: number, z: number) => {
+          if (insideDoor) return Math.hypot(x, z) > 2.6;
           if (Math.hypot(x, z) > ISLAND_WALK_RADIUS) return true;
           if (x > RIVER_X0 && x < RIVER_X1 && Math.abs(z - BRIDGE_Z) > BRIDGE_HALF) return true;
           return blockers.some((b) => Math.hypot(x - b.x, z - b.z) < b.radius + 0.42);
+        };
+
+        // The bridge deck is an arch; walking the river lane lifts the player over it.
+        const bridgeY = (x: number, z: number) => {
+          if (x > RIVER_X0 - 0.7 && x < RIVER_X1 + 0.7 && Math.abs(z - BRIDGE_Z) < BRIDGE_HALF + 0.4) {
+            const t = THREE.MathUtils.clamp((x - (RIVER_X0 - 0.7)) / (RIVER_X1 - RIVER_X0 + 1.4), 0, 1);
+            return Math.sin(Math.PI * t) * 1.05;
+          }
+          return 0;
+        };
+
+        const enterDoor = (door: (typeof DOORS)[number]) => {
+          insideDoor = door;
+          doorCooldown = 1.2;
+          gameRoot.visible = false;
+          interiorRoot.visible = true;
+          playerRoot.position.set(0, INTERIOR_Y, 0.4);
+          playerRoot.rotation.y = Math.PI;
+          toast(`Welcome inside ${door.label} — walk back to the door to leave`);
+          pushUi();
+        };
+        const exitDoor = () => {
+          if (!insideDoor) return;
+          const door = insideDoor;
+          insideDoor = null;
+          doorCooldown = 2.0;
+          gameRoot.visible = true;
+          interiorRoot.visible = false;
+          playerRoot.position.set(door.exitX, 0, door.exitZ);
+          playerRoot.rotation.y = Math.atan2(-door.exitX, -door.exitZ);
+          pushUi();
         };
 
         // ---------- Main loop ----------
@@ -951,8 +1211,8 @@ export default function MapleCove() {
           last = now;
           elapsed += dt;
 
-          // Day-night progression drives sky, sun, fog, and lanterns.
-          const dayU = THREE.MathUtils.clamp(1 - time / DAY_TIME, 0, 1);
+          // Looping ambient day-night cycle (no fail state): morning → dusk → morning.
+          const dayU = 0.5 - 0.5 * Math.cos((elapsed / DAY_CYCLE) * Math.PI * 2);
           const light = dayLerp(dayU);
           (scene.background as THREE.Color).copy(skyColor);
           scene.fog!.color.copy(skyColor);
@@ -968,7 +1228,9 @@ export default function MapleCove() {
           const lanternGlow = Math.max(0, (dayU - 0.68) / 0.32) * 22;
           lanternLights.forEach((l) => { l.intensity = lanternGlow; });
 
-          playerRoot.position.y = 0;
+          playerRoot.position.y = insideDoor
+            ? INTERIOR_Y
+            : bridgeY(playerRoot.position.x, playerRoot.position.z);
           const dx = (pressed.right ? 1 : 0) - (pressed.left ? 1 : 0);
           const dz = (pressed.back ? 1 : 0) - (pressed.forward ? 1 : 0);
           const moving = running && Boolean(dx || dz);
@@ -986,6 +1248,34 @@ export default function MapleCove() {
           if (soundOn && moving && audio.footsteps.paused) void audio.footsteps.play().catch(() => undefined);
           if ((!moving || !soundOn) && !audio.footsteps.paused) audio.footsteps.pause();
 
+          // Doors: step up to a door to enter; walk back to it to leave.
+          doorCooldown = Math.max(0, doorCooldown - dt);
+          if (running && doorCooldown <= 0) {
+            if (!insideDoor) {
+              for (const door of DOORS) {
+                if (door.key === "own" && !houseBuilt) continue;
+                if (Math.hypot(door.x - playerRoot.position.x, door.z - playerRoot.position.z) < 1.25) {
+                  if (!interiorReady) {
+                    toast(`${door.label} is still being furnished…`);
+                    doorCooldown = 3;
+                  } else {
+                    enterDoor(door);
+                  }
+                  break;
+                }
+              }
+            } else if (playerRoot.position.z > 2.0 && Math.abs(playerRoot.position.x) < 1.1) {
+              exitDoor();
+            }
+          }
+
+          // House build-up animation after the fund fills.
+          if (houseBuilt && houseBuildT < 1) {
+            houseBuildT = Math.min(1, houseBuildT + dt / 1.4);
+            const s = 1 - Math.pow(1 - houseBuildT, 3);
+            ownHouse.scale.setScalar(Math.max(0.001, s));
+          }
+
           if (carried.length > 0) {
             carryAction.timeScale = moving ? 1.6 : 0;
             setPlayerAction(carryAction);
@@ -999,7 +1289,6 @@ export default function MapleCove() {
             leftHandBone.getWorldPosition(leftHandWorld);
             rightHandBone.getWorldPosition(rightHandWorld);
             handMid.addVectors(leftHandWorld, rightHandWorld).multiplyScalar(0.5);
-            contentRoot.worldToLocal(handMid);
             carriedRoot.children.forEach((item, index) => {
               item.position.set(handMid.x, handMid.y + 0.05 + index * 0.32, handMid.z);
               item.quaternion.copy(playerRoot.quaternion);
@@ -1016,7 +1305,7 @@ export default function MapleCove() {
               tree.stock = 2;
               tree.restockAt = 0;
             }
-            if (!running || tree.stock === 0 || tree.shakeT > 0) return;
+            if (!running || insideDoor || tree.stock === 0 || tree.shakeT > 0) return;
             const d = Math.hypot(tree.x - playerRoot.position.x, tree.z - playerRoot.position.z);
             if (d < 1.7) {
               tree.shakeT = 0.6;
@@ -1041,6 +1330,139 @@ export default function MapleCove() {
             }
           });
 
+          // Fishing: stand by a ripple to cast; the fish arcs onto the bank.
+          if (!fishing) {
+            fishSpots.forEach((spot) => {
+              spot.ripple.scale.setScalar(1 + Math.sin(elapsed * 2 + spot.phase) * 0.12);
+              (spot.ripple.material as THREE.MeshBasicMaterial).opacity = 0.36 + Math.sin(elapsed * 2 + spot.phase) * 0.14;
+              if (spot.taken) {
+                if (spot.respawnAt > 0 && elapsed >= spot.respawnAt) {
+                  spot.taken = false;
+                  spot.ripple.visible = true;
+                }
+                return;
+              }
+              if (!running || insideDoor || carried.length >= MAX_CARRY) return;
+              const d = Math.hypot(spot.x - playerRoot.position.x, spot.z - playerRoot.position.z);
+              if (d < 2.2) {
+                fishing = { spot, endAt: elapsed + 1.5 };
+                toast("🐟 Something's nibbling…");
+              }
+            });
+          } else {
+            const spot = fishing.spot;
+            const d = Math.hypot(spot.x - playerRoot.position.x, spot.z - playerRoot.position.z);
+            if (d > 3.4 || insideDoor || !running) {
+              fishing = null;
+            } else if (elapsed >= fishing.endAt) {
+              spot.taken = true;
+              spot.ripple.visible = false;
+              spot.respawnAt = elapsed + 24;
+              play("splash");
+              dropItem(
+                "fish", spot.x, spot.z,
+                playerRoot.position.x + (playerRoot.position.x - spot.x) * 0.3,
+                playerRoot.position.z + (playerRoot.position.z - spot.z) * 0.3,
+              );
+              fishing = null;
+            }
+          }
+          rodProp.visible = Boolean(fishing);
+          if (fishing) {
+            playerRoot.updateMatrixWorld(true);
+            rightHandBone.getWorldPosition(toolAnchor);
+            rodProp.position.copy(toolAnchor);
+            rodProp.quaternion.copy(playerRoot.quaternion);
+            rodProp.rotateX(-0.85);
+          }
+
+          // Catchable dragonflies orbit the meadows; walk close to net them.
+          catchableBugs.forEach((bug) => {
+            if (bug.caught) {
+              if (bug.respawnAt > 0 && elapsed >= bug.respawnAt) {
+                bug.caught = false;
+                bug.root.visible = true;
+              }
+              return;
+            }
+            const a = elapsed * 0.9 + bug.phase;
+            bug.root.position.set(
+              bug.anchor.x + Math.cos(a) * 1.3,
+              0.9 + Math.sin(elapsed * 2.2 + bug.phase) * 0.25,
+              bug.anchor.z + Math.sin(a) * 1.3,
+            );
+            bug.root.rotation.y = -a + Math.PI / 2;
+            if (!running || insideDoor || carried.length >= MAX_CARRY) return;
+            const d = Math.hypot(bug.root.position.x - playerRoot.position.x, bug.root.position.z - playerRoot.position.z);
+            if (d < 1.35) {
+              bug.caught = true;
+              bug.root.visible = false;
+              bug.respawnAt = elapsed + 30;
+              netFlashT = 0.5;
+              play("swoosh");
+              carried.push("bug");
+              refreshCarried();
+              play("pickup");
+              toast(`🦋 Caught a giant dragonfly! ${carried.length}/${MAX_CARRY} in hands`);
+              pushUi();
+            }
+          });
+          netFlashT = Math.max(0, netFlashT - dt);
+          netProp.visible = netFlashT > 0;
+          if (netProp.visible) {
+            playerRoot.updateMatrixWorld(true);
+            rightHandBone.getWorldPosition(toolAnchor);
+            netProp.position.copy(toolAnchor);
+            netProp.quaternion.copy(playerRoot.quaternion);
+            netProp.rotateZ(Math.sin(netFlashT * 14) * 0.5);
+          }
+
+          // Soil patches: plant carried fruit, saplings grow into real trees.
+          soilSpots.forEach((spot) => {
+            if (spot.state === "growing") {
+              const progress = Math.min(1, (elapsed - spot.plantedAt) / TREE_GROW_SECONDS);
+              if (spot.sapling) spot.sapling.scale.setScalar(0.6 + progress * 0.7);
+              if (progress >= 1) {
+                spot.state = "grown";
+                if (spot.sapling) {
+                  contentRoot.remove(spot.sapling);
+                  spot.sapling = null;
+                }
+                const kind = spot.kind ?? "apple";
+                const tree = fitHeight(sceneFor(kind === "apple" ? ASSETS.props.appleTree : ASSETS.props.orangeTree), 4.4);
+                tree.position.set(spot.x, 0, spot.z);
+                tree.rotation.y = spot.x;
+                contentRoot.add(tree);
+                const blocker = { x: spot.x, z: spot.z, radius: 0.85 };
+                blockers.push(blocker);
+                fruitTrees.push({ root: tree, kind, x: spot.x, z: spot.z, stock: 2, restockAt: 0, shakeT: 0 });
+                plantedGrowth.push({ tree, blocker, spot });
+                play("jingle");
+                toast(`🌳 Your ${ITEM_NAME[kind]} tree grew in!`);
+              }
+              return;
+            }
+            if (spot.state !== "empty" || !running || insideDoor) return;
+            const fruitIndex = carried.findIndex((c) => c === "apple" || c === "orange");
+            if (fruitIndex === -1) return;
+            const d = Math.hypot(spot.x - playerRoot.position.x, spot.z - playerRoot.position.z);
+            if (d < 1.1) {
+              const kind = carried[fruitIndex] as "apple" | "orange";
+              carried.splice(fruitIndex, 1);
+              refreshCarried();
+              spot.state = "growing";
+              spot.kind = kind;
+              spot.plantedAt = elapsed;
+              const sapling = saplingTemplate.clone(true);
+              sapling.position.set(spot.x, 0, spot.z);
+              contentRoot.add(sapling);
+              spot.sapling = sapling;
+              play("pickup");
+              toast(`🌱 Planted a ${ITEM_NAME[kind]} — it'll grow into a tree!`);
+              pushUi();
+            }
+          });
+
           // Ground items: drop arcs, idle bobbing, pickup.
           groundItems.forEach((item) => {
             if (item.state === "drop") {
@@ -1052,7 +1474,7 @@ export default function MapleCove() {
             }
             item.obj.rotation.y += dt * 0.9;
             item.obj.position.y = item.to.y + Math.sin(elapsed * 2.4 + item.offset) * 0.03 + 0.02;
-            if (!running) return;
+            if (!running || insideDoor) return;
             const d = Math.hypot(item.obj.position.x - playerRoot.position.x, item.obj.position.z - playerRoot.position.z);
             if (d < 1.05) collect(item);
           });
@@ -1072,6 +1494,7 @@ export default function MapleCove() {
               randomRequest(v);
               pushUi();
             }
+            if (insideDoor) return;
             const d = Math.hypot(v.data.x - playerRoot.position.x, v.data.z - playerRoot.position.z);
             if (d < 1.9) {
               deliverTo(v);
@@ -1118,6 +1541,14 @@ export default function MapleCove() {
             cloud.position.x += dt * 0.5;
             if (cloud.position.x > 70) cloud.position.x = -70;
           });
+          smokePuffs.forEach((puff, index) => {
+            puff.position.y += dt * 1.1;
+            puff.position.x += dt * 0.7;
+            if (puff.position.y > 40 + index * 2) {
+              puff.position.set(-72, 20, -48);
+            }
+            (puff.material as THREE.MeshBasicMaterial).opacity = 0.55 * Math.max(0, 1 - (puff.position.y - 20) / 24);
+          });
           foamMat.opacity = 0.24 + Math.sin(elapsed * 1.3) * 0.12;
           foam.scale.setScalar(1 + Math.sin(elapsed * 1.3) * 0.004);
 
@@ -1153,24 +1584,21 @@ export default function MapleCove() {
             }
           }
 
-          if (running) {
-            time = Math.max(0, time - dt);
-            if (time <= 0) {
-              running = false;
-              phase = "ended";
-              audio.music.pause();
-              audio.footsteps.pause();
-              pushUi({ toast: "" });
-            } else if (elapsed - lastUiPush > 0.15) {
-              lastUiPush = elapsed;
-              pushUi();
-            }
+          if (running && elapsed - lastUiPush > 0.15) {
+            lastUiPush = elapsed;
+            pushUi();
           }
 
-          // During the celebration the camera tilts up so the fireworks frame.
+          // Camera: tight indoors, skyward during the fireworks celebration.
           const skyward = phase === "celebrating" || phase === "won";
-          desiredCamera.set(playerRoot.position.x, skyward ? 4.6 : 6.6, playerRoot.position.z + (skyward ? 11.5 : 9.6));
-          cameraTarget.set(playerRoot.position.x, skyward ? 7.5 : 1.0, playerRoot.position.z - (skyward ? 9 : 2));
+          const py = insideDoor ? INTERIOR_Y : bridgeY(playerRoot.position.x, playerRoot.position.z);
+          if (insideDoor) {
+            desiredCamera.set(playerRoot.position.x * 0.4, py + 2.7, playerRoot.position.z + 4.4);
+            cameraTarget.set(0, py + 1.1, 0);
+          } else {
+            desiredCamera.set(playerRoot.position.x, py + (skyward ? 4.6 : 6.6), playerRoot.position.z + (skyward ? 11.5 : 9.6));
+            cameraTarget.set(playerRoot.position.x, py + (skyward ? 7.5 : 1.0), playerRoot.position.z - (skyward ? 9 : 2));
+          }
           camera.position.lerp(desiredCamera, 1 - Math.pow(0.001, dt));
           camera.lookAt(cameraTarget);
           renderer.render(scene, camera);
@@ -1191,7 +1619,7 @@ export default function MapleCove() {
         if (!disposed) setUi((value) => ({
           ...value,
           phase: "error",
-          loading: "Maple Cove could not open.",
+          loading: "Boulder Cove could not open.",
           toast: "A Mint asset failed to load.",
         }));
       }
@@ -1211,23 +1639,21 @@ export default function MapleCove() {
   }, []);
 
   const hold = (direction: Direction, value: boolean) => controllerRef.current?.setDirection(direction, value);
-  const modal = ui.phase === "loading" || ui.phase === "ready" || ui.phase === "won" || ui.phase === "ended" || ui.phase === "error";
-  const dayU = 1 - ui.time / DAY_TIME;
-  const dayLabel = dayU < 0.35 ? "MORNING" : dayU < 0.6 ? "MIDDAY" : dayU < 0.85 ? "GOLDEN HOUR" : "DUSK";
+  const modal = ui.phase === "loading" || ui.phase === "ready" || ui.phase === "won" || ui.phase === "error";
   const title = ui.titleOk
-    ? <img src={ASSETS.images.title} alt="Maple Cove" onError={() => setUi((v) => ({ ...v, titleOk: false }))} />
-    : <span className="title-fallback">MAPLE COVE</span>;
+    ? <img src={ASSETS.images.title} alt="Boulder Cove" onError={() => setUi((v) => ({ ...v, titleOk: false }))} />
+    : <span className="title-fallback">BOULDER COVE</span>;
 
   return (
     <main className="maple-game">
-      <canvas ref={canvasRef} className="game-canvas" aria-label="Maple Cove 3D game" tabIndex={0} />
+      <canvas ref={canvasRef} className="game-canvas" aria-label="Boulder Cove 3D game" tabIndex={0} />
       <header className="game-header">
         <div>
           {title}
           <div className="mint-credit">BROUGHT TO YOU BY MINT</div>
         </div>
         <div className="header-spacer" />
-        <div className="coin-chip"><span className="coin-dot" /><b>{ui.coins}</b><span>/ {FUND_GOAL}</span></div>
+        <div className="coin-chip"><span className="coin-dot" /><b>{ui.coins}</b><span>/ {HOUSE_COST}</span></div>
         <button onClick={() => controllerRef.current?.toggleSound()}>{ui.sound ? "SOUND ON" : "SOUND OFF"}</button>
       </header>
       {(ui.phase === "playing" || ui.phase === "celebrating") && ui.requests.length > 0 && (
@@ -1241,14 +1667,9 @@ export default function MapleCove() {
         </div>
       )}
       <section className="fund-card">
-        <span>FESTIVAL FUND</span>
-        <strong>{ui.coins} / {FUND_GOAL} coins</strong>
-        <div className="meter"><i style={{ width: `${Math.min(100, (ui.coins / FUND_GOAL) * 100)}%` }} /></div>
-      </section>
-      <section className="clock-card">
-        <span>SUNDOWN AT DUSK</span>
-        <strong>{dayLabel}</strong>
-        <div className="meter"><i style={{ width: `${Math.max(0, (ui.time / DAY_TIME) * 100)}%` }} /></div>
+        <span>HUT FUND</span>
+        <strong>{ui.houseBuilt ? "HUT BUILT!" : `${ui.coins} / ${HOUSE_COST} coins`}</strong>
+        <div className="meter"><i style={{ width: `${Math.min(100, (ui.coins / HOUSE_COST) * 100)}%` }} /></div>
       </section>
       <div className="carry-row">
         {Array.from({ length: MAX_CARRY }, (_, index) => (
@@ -1261,7 +1682,7 @@ export default function MapleCove() {
       {ui.banter && <div className="npc-banter"><b>{ui.banter.speaker}</b><span>“{ui.banter.line}”</span></div>}
       <div className="keyboard-hint">
         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
-        <span>SHAKE TREES · COMB THE BEACH · GRANT WISHES</span>
+        <span>SHAKE · FISH · CATCH BUGS · PLANT · EARN YOUR HUT</span>
       </div>
       <div className="touch-controls" aria-label="Touch controls">
         <button onPointerDown={() => hold("forward", true)} onPointerUp={() => hold("forward", false)} aria-label="Move forward">▲</button>
@@ -1275,19 +1696,20 @@ export default function MapleCove() {
         <div className="game-modal">
           <div className="modal-card">
             {title}
-            <p className="modal-kicker">AN ORIGINAL MINT-GENERATED ISLAND LIFE GAME</p>
+            <p className="modal-kicker">AN ORIGINAL MINT-GENERATED PREHISTORIC ISLAND LIFE GAME</p>
             <p>
               {ui.phase === "loading"
                 ? ui.loading
                 : ui.phase === "won"
-                  ? `The festival fund is full and the fireworks are flying! You raised ${ui.coins} coins for Maple Cove's bridge festival.`
-                  : ui.phase === "ended"
-                    ? `The stars came out with the fund at ${ui.coins} of ${FUND_GOAL} coins. The villagers voted to try again tomorrow.`
-                    : "Tonight is Maple Cove's bridge festival — if the town fund fills in time! Shake fruit trees, comb the beach for shells, return lost parcels, and deliver whatever the villagers wish for before sundown."}
+                  ? "Your boulder hut is built — fireworks over Boulder Cove! Walk up to your new front door to step inside, and keep helping the dinos as long as you like."
+                  : "You've just paddled up to Boulder Cove — but you don't have a hut yet! Shake berry trees, fish the ripples, net giant dragonflies, plant fruit in soft soil, return lost dino eggs, and bring the dino villagers what they wish for. Fill the 420-coin hut fund and Boulder will stack your very own boulder hut."}
             </p>
             {ui.phase !== "loading" && (
-              <button disabled={ui.phase === "error"} onClick={() => controllerRef.current?.start()}>
-                {ui.phase === "won" ? "PLAY ANOTHER DAY" : ui.phase === "ended" ? "TRY TOMORROW" : ui.phase === "error" ? "COVE CLOSED" : "START THE DAY"}
+              <button
+                disabled={ui.phase === "error"}
+                onClick={() => (ui.phase === "won" ? controllerRef.current?.resume() : controllerRef.current?.start())}
+              >
+                {ui.phase === "won" ? "KEEP PLAYING" : ui.phase === "error" ? "COVE CLOSED" : "MOVE TO BOULDER COVE"}
               </button>
             )}
             <small>WASD / ARROWS TO MOVE · EVERY VISIBLE AND AUDIBLE ASSET MADE IN MINT</small>
