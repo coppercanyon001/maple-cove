@@ -557,7 +557,10 @@ export default function MapleCove() {
           contentRoot.add(root);
           blockers.push({ x: data.x, z: data.z, radius: 0.7 });
           const mixer = new THREE.AnimationMixer(root);
-          const clip = gltfs.get(asset.animation)!.animations[0];
+          const clip = gltfs.get(asset.animation)!.animations[0].clone();
+          // Gesture clips can carry root motion that slides or tips the whole
+          // character — pin villagers by dropping hip/root translation tracks.
+          clip.tracks = clip.tracks.filter((track) => !track.name.endsWith(".position"));
           const action = mixer.clipAction(clip);
           action.time = Math.random() * Math.max(clip.duration, 0.1);
           action.play();
@@ -920,8 +923,10 @@ export default function MapleCove() {
             if (!mod || disposed) return;
             const vista = new mod.SplatMesh({ url: VISTA_URL });
             vista.quaternion.set(1, 0, 0, 0);
-            vista.scale.setScalar(20);
-            vista.position.set(0, -4.5, 0);
+            // Parked beyond the north sea as a distant landmass — the follow
+            // camera only ever faces north, so this is the whole horizon.
+            vista.scale.setScalar(7);
+            vista.position.set(0, -3, -85);
             gameRoot.add(vista);
             if (new URLSearchParams(location.search).has("qa")) {
               (window as unknown as Record<string, unknown>).__vista = vista;
@@ -1386,7 +1391,7 @@ export default function MapleCove() {
 
           if (insideDoor) {
             const floorY = interiorFloorY(playerRoot.position.x, playerRoot.position.z);
-            playerRoot.position.y = floorY ?? INTERIOR_Y;
+            playerRoot.position.y = floorY !== null ? floorY - 0.12 : INTERIOR_Y;
           } else {
             playerRoot.position.y = bridgeY(playerRoot.position.x, playerRoot.position.z);
           }
@@ -1607,8 +1612,8 @@ export default function MapleCove() {
             const towardBug = moving && (
               (move.x * (bug.root.position.x - playerRoot.position.x) + move.z * (bug.root.position.z - playerRoot.position.z)) / Math.max(d, 0.001) > 0.45
             );
-            if (d < 3.4 && towardBug) bug.alarm = Math.min(1, bug.alarm + dt * 1.7);
-            else bug.alarm = Math.max(0, bug.alarm - dt * 1.5);
+            if (d < 2.6 && towardBug) bug.alarm = Math.min(1, bug.alarm + dt * 1.4);
+            else bug.alarm = Math.max(0, bug.alarm - dt * 1.6);
             if (bug.alarm >= 1) {
               bug.caught = true;
               bug.root.visible = false;
