@@ -18,13 +18,13 @@ type Ui = {
   sound: boolean;
   loading: string;
   toast: string;
+  catchBanner: { emoji: string; line: string } | null;
   banter: { speaker: string; line: string } | null;
   requests: RequestChip[];
   titleOk: boolean;
 };
 
 const DAY_CYCLE = 240; // seconds per looping day-night cycle (ambience only, no fail state)
-const MAX_CARRY = 3;
 const HOUSE_COST = 420;
 const ITEM_EMOJI: Record<ItemType, string> = { apple: "🍒", orange: "🍊", shell: "🐚", parcel: "🥚", fish: "🐟", bug: "🦋" };
 const ITEM_NAME: Record<ItemType, string> = { apple: "boulderberry", orange: "spikefruit", shell: "ammonite", parcel: "dino egg", fish: "fish", bug: "dragonfly" };
@@ -38,6 +38,7 @@ const INITIAL_UI: Ui = {
   sound: true,
   loading: "Paddling to Boulder Cove…",
   toast: "",
+  catchBanner: null,
   banter: null,
   requests: [],
   titleOk: true,
@@ -506,15 +507,13 @@ export default function MapleCove() {
           if (child.name === "LeftHand") leftHand = child as THREE.Bone;
           if (child.name === "RightHand") rightHand = child as THREE.Bone;
         });
-        if (!leftHand || !rightHand) throw new Error("Mint player rig is missing hand bones.");
-        const leftHandBone: THREE.Bone = leftHand;
+        if (!rightHand) throw new Error("Mint player rig is missing hand bones.");
         const rightHandBone: THREE.Bone = rightHand;
+        void leftHand;
 
         const playerMixer = new THREE.AnimationMixer(playerModel);
         const idleAction = playerMixer.clipAction(gltfs.get(ASSETS.player.idle)!.animations[0]);
         const runAction = playerMixer.clipAction(gltfs.get(ASSETS.player.run)!.animations[0]);
-        const carryAction = playerMixer.clipAction(gltfs.get(ASSETS.player.carry)!.animations[0]);
-        carryAction.setLoop(THREE.LoopRepeat, Infinity);
         idleAction.play();
         let playerAction = idleAction;
         const setPlayerAction = (next: THREE.AnimationAction) => {
@@ -618,6 +617,7 @@ export default function MapleCove() {
           obj: THREE.Object3D; zone: (typeof FISH_ZONES)[number];
           x: number; z: number; angle: number; speed: number;
           state: "swim" | "lured" | "gone"; stateT: number; respawnAt: number;
+          nibbles: number; nextNibbleAt: number;
         };
         const fishTemplate = fitMax(sceneFor(ASSETS.props.fish), 0.62);
         const swimFish: SwimFish[] = [0, 1, 2, 0].map((zoneIndex, i) => {
@@ -630,7 +630,7 @@ export default function MapleCove() {
             x: THREE.MathUtils.lerp(zone.x0, zone.x1, 0.3 + 0.4 * ((i * 0.37) % 1)),
             z: THREE.MathUtils.lerp(zone.z0, zone.z1, 0.2 + 0.6 * ((i * 0.61) % 1)),
             angle: i * 1.9, speed: 0.55 + (i % 3) * 0.18,
-            state: "swim", stateT: 0, respawnAt: 0,
+            state: "swim", stateT: 0, respawnAt: 0, nibbles: 0, nextNibbleAt: 0,
           };
         });
         const bobber = new THREE.Group();
@@ -650,15 +650,19 @@ export default function MapleCove() {
         bobber.visible = false;
         gameRoot.add(bobber);
         let luredFish: SwimFish | null = null;
+        let bobberDipT = 0;
+        let bobberBaseY = 0;
+        const nibbleAudio = new Audio(ASSETS.audio.splash);
+        nibbleAudio.volume = 0.16;
         const toolAnchor = new THREE.Vector3();
 
         // ---------- Catchable Mint dragonflies ----------
-        type CatchableBug = { root: THREE.Object3D; anchor: { x: number; z: number }; caught: boolean; respawnAt: number; phase: number };
+        type CatchableBug = { root: THREE.Object3D; anchor: { x: number; z: number }; caught: boolean; respawnAt: number; phase: number; alarm: number };
         const catchableBugs: CatchableBug[] = DRAGONFLY_SPOTS.map((s, i) => {
           const root = templates.bug.clone(true);
           root.scale.multiplyScalar(1.25);
           contentRoot.add(root);
-          return { root, anchor: s, caught: false, respawnAt: 0, phase: i * 2.1 };
+          return { root, anchor: s, caught: false, respawnAt: 0, phase: i * 2.1, alarm: 0 };
         });
 
         // ---------- Soil patches: plant carried fruit, grow a new tree ----------
@@ -681,18 +685,11 @@ export default function MapleCove() {
         const plantedGrowth: PlantedGrowth[] = [];
 
         // ---------- Carried items ----------
-        const carriedRoot = new THREE.Group();
-        scene.add(carriedRoot);
+        // Pockets: unlimited invisible inventory — items vanish when picked
+        // up and the character keeps their normal walk/run animation.
         let carried: ItemType[] = [];
         let carriedParcelAddressee: number | null = null;
-        const refreshCarried = () => {
-          while (carriedRoot.children.length) carriedRoot.remove(carriedRoot.children[0]);
-          carried.forEach((type) => {
-            const item = templates[type].clone(true);
-            disableShadowCast(item);
-            carriedRoot.add(item);
-          });
-        };
+        const refreshCarried = () => undefined;
 
         // ---------- Ambient life (procedural particles, flagged in manifest) ----------
         const butterflyRoot = new THREE.Group();
@@ -822,6 +819,56 @@ export default function MapleCove() {
           museum: "", // bone museum hall — world final blocked on Mint credits top-up
         };
         const VISTA_URL = "https://cdn.mint.gg/rad/prehistoric-lagoon-valley-8f1fdd20cf2c997a-lod.rad";
+        // Invisible collider meshes shipped with each world — walkable bounds
+        // come from the actual room geometry, not a guessed circle.
+        const INTERIOR_COLLIDERS: Record<string, string> = {
+          own: "https://cdn.mint.gg/worlds/flintstones-cave-home-collider-glb-362780d9a0eca593.glb",
+          yellow: "https://cdn.mint.gg/worlds/flintstones-cave-home-collider-glb-58f1004e5e48a3e5.glb",
+          coral: "https://cdn.mint.gg/worlds/triceratops-cave-home-collider-glb-588b89d56e56177f.glb",
+          shop: "https://cdn.mint.gg/worlds/stone-age-general-store-collider-glb-f5b8a3436a3d3deb.glb",
+          museum: "",
+        };
+        const interiorColliders = new Map<string, THREE.Object3D>();
+        const colliderLoader = new GLTFLoader();
+        const loadInteriorCollider = (key: string) => {
+          if (interiorColliders.has(key) || !INTERIOR_COLLIDERS[key]) return;
+          colliderLoader.load(INTERIOR_COLLIDERS[key], (gltf) => {
+            if (disposed) return;
+            const collider = gltf.scene;
+            collider.traverse((child) => {
+              const mesh = child as THREE.Mesh;
+              if (mesh.isMesh) {
+                mesh.material = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+              }
+            });
+            collider.quaternion.set(1, 0, 0, 0); // same transform as the splat
+            collider.position.set(0, 1.5, 0);
+            interiorRoot.add(collider);
+            interiorColliders.set(key, collider);
+          }, undefined, (error) => console.warn("Interior collider failed:", key, error));
+        };
+        // Exit doormat: you appear on it; step off, and step back on to leave.
+        const exitPad = new THREE.Mesh(
+          new THREE.RingGeometry(0.5, 0.72, 28),
+          new THREE.MeshBasicMaterial({ color: 0xffd97a, transparent: true, opacity: 0.75, side: THREE.DoubleSide }),
+        );
+        exitPad.rotation.x = -Math.PI / 2;
+        exitPad.position.set(0, 0.06, 0.8);
+        interiorRoot.add(exitPad);
+        let enteredAt = 0;
+        let steppedOffPad = false;
+        const floorRaycaster = new THREE.Raycaster();
+        const floorRayOrigin = new THREE.Vector3();
+        const FLOOR_DOWN = new THREE.Vector3(0, -1, 0);
+        const interiorFloorY = (x: number, z: number): number | null => {
+          const collider = insideDoor ? interiorColliders.get(insideDoor.key) : undefined;
+          if (!collider) return null;
+          floorRayOrigin.set(x, INTERIOR_Y + 2.6, z);
+          floorRaycaster.set(floorRayOrigin, FLOOR_DOWN);
+          floorRaycaster.far = 6.5;
+          const hits = floorRaycaster.intersectObject(collider, true);
+          return hits.length ? hits[0].point.y : null;
+        };
         const interiorSplats = new Map<string, THREE.Object3D>();
         let sparkModule: Promise<typeof import("@sparkjsdev/spark") | null> | null = null;
         const loadSpark = () => {
@@ -838,6 +885,7 @@ export default function MapleCove() {
         };
         const showInterior = (key: string) => {
           interiorSplats.forEach((splat, k) => { splat.visible = k === key; });
+          loadInteriorCollider(key);
           if (interiorSplats.has(key) || !INTERIOR_WORLDS[key]) return;
           void loadSpark().then((mod) => {
             if (!mod || disposed || interiorSplats.has(key)) return;
@@ -903,6 +951,14 @@ export default function MapleCove() {
           pushUi({ toast: message });
           toastTimer = window.setTimeout(() => pushUi({ toast: "" }), 2000);
           timers.push(toastTimer);
+        };
+        let bannerTimer = 0;
+        const banner = (emoji: string, line: string) => {
+          window.clearTimeout(bannerTimer);
+          play("jingle");
+          pushUi({ catchBanner: { emoji, line } });
+          bannerTimer = window.setTimeout(() => pushUi({ catchBanner: null }), 3200);
+          timers.push(bannerTimer);
         };
         const banter = (speaker: string, line: string) => {
           window.clearTimeout(banterTimer);
@@ -1023,13 +1079,13 @@ export default function MapleCove() {
         };
 
         const collect = (item: GroundItem) => {
-          if (!running || carried.length >= MAX_CARRY) return false;
+          if (!running) return false;
           carried.push(item.type);
           if (item.type === "parcel" && item.addressee !== undefined) {
             carriedParcelAddressee = item.addressee;
             toast(`A lost dino egg — return it to ${villagerRuntimes[item.addressee].name}!`);
           } else {
-            toast(`${ITEM_EMOJI[item.type]} picked up · ${carried.length}/${MAX_CARRY} in hands`);
+            toast(`${ITEM_EMOJI[item.type]} ${ITEM_NAME[item.type]} pocketed!`);
           }
           if (item.shellSpot !== undefined) {
             shellSpots[item.shellSpot].filled = false;
@@ -1149,7 +1205,7 @@ export default function MapleCove() {
             const wanting = villagerRuntimes.find((v) => v.request);
             if (wanting?.request) {
               const need = wanting.request.type;
-              while (carried.length < MAX_CARRY && carried.filter((c) => c === need).length < wanting.request.count) carried.push(need);
+              while (carried.filter((c) => c === need).length < wanting.request.count) carried.push(need);
               refreshCarried();
               pushUi();
             }
@@ -1196,7 +1252,12 @@ export default function MapleCove() {
         pushUi();
 
         const blocked = (x: number, z: number) => {
-          if (insideDoor) return Math.hypot(x, z) > 2.6;
+          if (insideDoor) {
+            if (!interiorColliders.get(insideDoor.key)) return Math.hypot(x, z) > 2.6;
+            const floorY = interiorFloorY(x, z);
+            if (floorY === null) return true;
+            return Math.abs(floorY - playerRoot.position.y) > 0.5;
+          }
           if (Math.hypot(x, z) > ISLAND_WALK_RADIUS) return true;
           if (x > RIVER_X0 && x < RIVER_X1 && Math.abs(z - BRIDGE_Z) > BRIDGE_HALF) return true;
           return blockers.some((b) => Math.hypot(x - b.x, z - b.z) < b.radius + 0.42);
@@ -1217,9 +1278,11 @@ export default function MapleCove() {
           gameRoot.visible = false;
           interiorRoot.visible = true;
           showInterior(door.key);
-          playerRoot.position.set(0, INTERIOR_Y, 0.4);
+          playerRoot.position.set(0, INTERIOR_Y, 0.8);
           playerRoot.rotation.y = Math.PI;
-          toast(`Welcome inside ${door.label} — walk back to the door to leave`);
+          enteredAt = elapsed;
+          steppedOffPad = false;
+          toast(`Welcome inside ${door.label} — step back on the glowing ring to leave`);
           pushUi();
         };
         const exitDoor = () => {
@@ -1239,9 +1302,6 @@ export default function MapleCove() {
         const move = new THREE.Vector3();
         const desiredCamera = new THREE.Vector3();
         const cameraTarget = new THREE.Vector3();
-        const leftHandWorld = new THREE.Vector3();
-        const rightHandWorld = new THREE.Vector3();
-        const handMid = new THREE.Vector3();
         const skyColor = new THREE.Color();
         const sunColor = new THREE.Color();
         const colorA = new THREE.Color();
@@ -1291,9 +1351,12 @@ export default function MapleCove() {
           const lanternGlow = Math.max(0, (dayU - 0.68) / 0.32) * 22;
           lanternLights.forEach((l) => { l.intensity = lanternGlow; });
 
-          playerRoot.position.y = insideDoor
-            ? INTERIOR_Y
-            : bridgeY(playerRoot.position.x, playerRoot.position.z);
+          if (insideDoor) {
+            const floorY = interiorFloorY(playerRoot.position.x, playerRoot.position.z);
+            playerRoot.position.y = floorY ?? INTERIOR_Y;
+          } else {
+            playerRoot.position.y = bridgeY(playerRoot.position.x, playerRoot.position.z);
+          }
           const dx = (pressed.right ? 1 : 0) - (pressed.left ? 1 : 0);
           const dz = (pressed.back ? 1 : 0) - (pressed.forward ? 1 : 0);
           const moving = running && Boolean(dx || dz);
@@ -1327,8 +1390,12 @@ export default function MapleCove() {
                   break;
                 }
               }
-            } else if (playerRoot.position.z > 2.0 && Math.abs(playerRoot.position.x) < 1.1) {
-              exitDoor();
+            } else {
+              // Doormat exit: leave the ring first, then step back on it.
+              const padD = Math.hypot(playerRoot.position.x - exitPad.position.x, playerRoot.position.z - exitPad.position.z);
+              if (padD > 1.6) steppedOffPad = true;
+              exitPad.material.opacity = 0.55 + Math.sin(elapsed * 4) * 0.25;
+              if (steppedOffPad && elapsed - enteredAt > 2 && padD < 0.8) exitDoor();
             }
           }
 
@@ -1339,24 +1406,9 @@ export default function MapleCove() {
             ownHouse.scale.setScalar(Math.max(0.001, s));
           }
 
-          if (carried.length > 0) {
-            carryAction.timeScale = moving ? 1.6 : 0;
-            setPlayerAction(carryAction);
-          } else if (moving) setPlayerAction(runAction);
+          if (moving) setPlayerAction(runAction);
           else setPlayerAction(idleAction);
           mixers.forEach((mixer) => mixer.update(dt));
-
-          // Carried stack rides at the hand midpoint (front carry pose).
-          if (carried.length > 0) {
-            playerRoot.updateMatrixWorld(true);
-            leftHandBone.getWorldPosition(leftHandWorld);
-            rightHandBone.getWorldPosition(rightHandWorld);
-            handMid.addVectors(leftHandWorld, rightHandWorld).multiplyScalar(0.5);
-            carriedRoot.children.forEach((item, index) => {
-              item.position.set(handMid.x, handMid.y + 0.05 + index * 0.32, handMid.z);
-              item.quaternion.copy(playerRoot.quaternion);
-            });
-          }
 
           // Fruit trees: shake on contact, drop fruit, restock over time.
           fruitTrees.forEach((tree) => {
@@ -1425,6 +1477,7 @@ export default function MapleCove() {
                 fish.obj.visible = false;
                 fish.respawnAt = elapsed + 8;
                 bobber.visible = false;
+                bobberDipT = 0;
                 luredFish = null;
                 toast("💨 It got away!");
               } else {
@@ -1432,11 +1485,23 @@ export default function MapleCove() {
                 const dzb = bobber.position.z - fish.z;
                 const db = Math.hypot(dxb, dzb);
                 fish.angle = Math.atan2(dzb, dxb);
-                if (db > 0.22) {
+                if (db > 0.5) {
                   fish.x += (dxb / db) * 1.15 * dt;
                   fish.z += (dzb / db) * 1.15 * dt;
+                } else if (fish.nibbles > 0) {
+                  // AC-style nibbles: the bobber dips a few times before the
+                  // real bite — patience is the whole game.
+                  if (elapsed >= fish.nextNibbleAt) {
+                    fish.nibbles -= 1;
+                    fish.nextNibbleAt = elapsed + 0.7 + (fish.speed * 10) % 0.6;
+                    bobberDipT = 0.28;
+                    nibbleAudio.currentTime = 0;
+                    if (soundOn) void nibbleAudio.play().catch(() => undefined);
+                  }
                 } else {
+                  // The real bite: bobber plunges, splash, and the catch banner.
                   play("splash");
+                  bobberDipT = 0.6;
                   fish.state = "gone";
                   fish.obj.visible = false;
                   fish.respawnAt = elapsed + 20;
@@ -1447,6 +1512,7 @@ export default function MapleCove() {
                     playerRoot.position.x + (playerRoot.position.x - fish.x) * 0.25,
                     playerRoot.position.z + (playerRoot.position.z - fish.z) * 0.25,
                   );
+                  banner("🐟", "I caught a prehistoric fish! It's positively ancient!");
                 }
               }
             }
@@ -1460,19 +1526,24 @@ export default function MapleCove() {
               }
             }
           });
-          if (running && !insideDoor && !luredFish && nearestFish && nearestFishD < CAST_RANGE && !moving && carried.length < MAX_CARRY) {
+          if (running && !insideDoor && !luredFish && nearestFish && nearestFishD < CAST_RANGE && !moving) {
             const target: SwimFish = nearestFish;
             luredFish = target;
             target.state = "lured";
             target.stateT = 0;
+            target.nibbles = 1 + Math.floor(((elapsed * 7) % 1) * 3);
+            target.nextNibbleAt = 0;
+            bobberBaseY = target.zone.y + 0.05;
             bobber.position.set(
               THREE.MathUtils.lerp(playerRoot.position.x, target.x, 0.55),
-              target.zone.y + 0.05,
+              bobberBaseY,
               THREE.MathUtils.lerp(playerRoot.position.z, target.z, 0.55),
             );
             bobber.visible = true;
             toast("🎣 Hold still… something's coming!");
           }
+          bobberDipT = Math.max(0, bobberDipT - dt);
+          bobber.position.y = bobberBaseY + (bobberDipT > 0 ? -0.12 : 0) + Math.sin(elapsed * 5) * 0.015;
           rodProp.visible = Boolean(luredFish) || nearestFishD < ROD_OUT_RANGE;
           if (rodProp.visible) {
             playerRoot.updateMatrixWorld(true);
@@ -1500,9 +1571,22 @@ export default function MapleCove() {
               bug.anchor.z + Math.sin(a) * 1.3,
             );
             bug.root.rotation.y = -a + Math.PI / 2;
-            if (!running || insideDoor || carried.length >= MAX_CARRY) return;
+            if (!running || insideDoor) return;
             const d = Math.hypot(bug.root.position.x - playerRoot.position.x, bug.root.position.z - playerRoot.position.z);
             if (d < nearestBugD) nearestBugD = d;
+            // AC-style sneaking: rushing straight in startles the dragonfly.
+            // Creep in short bursts — alarm builds while you move nearby and
+            // fades while you hold still.
+            if (d < 4.5 && moving) bug.alarm = Math.min(1, bug.alarm + dt * 2.0);
+            else bug.alarm = Math.max(0, bug.alarm - dt * 1.2);
+            if (bug.alarm >= 1) {
+              bug.caught = true;
+              bug.root.visible = false;
+              bug.respawnAt = elapsed + 7;
+              bug.alarm = 0;
+              toast("💨 The dragonfly darted away!");
+              return;
+            }
             if (d < 1.35) {
               bug.caught = true;
               bug.root.visible = false;
@@ -1512,7 +1596,7 @@ export default function MapleCove() {
               carried.push("bug");
               refreshCarried();
               play("pickup");
-              toast(`🦋 Caught a giant dragonfly! ${carried.length}/${MAX_CARRY} in hands`);
+              banner("🦋", "I caught a giant dragonfly! Positively prehistoric!");
               pushUi();
             }
           });
@@ -1783,12 +1867,18 @@ export default function MapleCove() {
         <div className="meter"><i style={{ width: `${Math.min(100, (ui.coins / HOUSE_COST) * 100)}%` }} /></div>
       </section>
       <div className="carry-row">
-        {Array.from({ length: MAX_CARRY }, (_, index) => (
-          <div key={index} className={`carry-slot ${ui.carried[index] ? "" : "empty"}`}>
-            {ui.carried[index] ? ITEM_EMOJI[ui.carried[index]] : ""}
-          </div>
-        ))}
+        {(Object.keys(ITEM_EMOJI) as ItemType[])
+          .map((type) => [type, ui.carried.filter((c) => c === type).length] as const)
+          .filter(([, count]) => count > 0)
+          .map(([type, count]) => (
+            <div key={type} className="carry-slot">
+              {ITEM_EMOJI[type]}<b>×{count}</b>
+            </div>
+          ))}
       </div>
+      {ui.catchBanner && (
+        <div className="catch-banner"><span>{ui.catchBanner.emoji}</span>{ui.catchBanner.line}</div>
+      )}
       {ui.toast && <div className="game-toast">{ui.toast}</div>}
       {ui.banter && <div className="npc-banter"><b>{ui.banter.speaker}</b><span>“{ui.banter.line}”</span></div>}
       <div className="keyboard-hint">
