@@ -207,7 +207,7 @@ const DAY_STOPS: DayStop[] = [
 
 export default function MapleCove() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const controllerRef = useRef<{ start: () => void; resume: () => void; toggleSound: () => void; setDirection: (d: Direction, v: boolean) => void } | null>(null);
+  const controllerRef = useRef<{ start: () => void; resume: () => void; action: () => void; toggleSound: () => void; setDirection: (d: Direction, v: boolean) => void } | null>(null);
   const [ui, setUi] = useState<Ui>(INITIAL_UI);
 
   useEffect(() => {
@@ -216,6 +216,7 @@ export default function MapleCove() {
     let animationFrame = 0;
     let cleanupRuntime: () => void = () => undefined;
     const pressed = { forward: false, back: false, left: false, right: false };
+    let actionQueued = false;
     const timers: number[] = [];
     let banterTimer = 0;
     let toastTimer = 0;
@@ -332,11 +333,13 @@ export default function MapleCove() {
         const gameRoot = new THREE.Group();
         scene.add(gameRoot);
 
-        // Segmented so the sea can roll — vertices are displaced every frame.
-        const waterGeo = new THREE.PlaneGeometry(480, 480, 56, 56);
+        // Segmented so the sea can roll — vertices are displaced AND tinted
+        // every frame so the swell reads even in flat toon lighting.
+        const waterGeo = new THREE.PlaneGeometry(480, 480, 96, 96);
+        waterGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(waterGeo.attributes.position.count * 3).fill(1), 3));
         const water = new THREE.Mesh(
           waterGeo,
-          new THREE.MeshStandardMaterial({ color: 0x4fa3c9, roughness: 0.35, metalness: 0.05 }),
+          new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.35, metalness: 0.05 }),
         );
         water.rotation.x = -Math.PI / 2;
         water.position.y = -0.52;
@@ -380,19 +383,25 @@ export default function MapleCove() {
         gameRoot.add(plaza);
 
         const riverGeo = new THREE.PlaneGeometry(RIVER_X1 - RIVER_X0, 58, 3, 44);
+        riverGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(riverGeo.attributes.position.count * 3).fill(1), 3));
         const river = new THREE.Mesh(
           riverGeo,
-          new THREE.MeshStandardMaterial({ color: 0x58b4d6, roughness: 0.3, transparent: true, opacity: 0.94 }),
+          new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.3, transparent: true, opacity: 0.94 }),
         );
         river.rotation.x = -Math.PI / 2;
         river.position.set((RIVER_X0 + RIVER_X1) / 2, 0.024, 0);
         gameRoot.add(river);
 
-        const foamMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 });
-        const foam = new THREE.Mesh(new THREE.RingGeometry(30.1, 30.8, 96), foamMat);
-        foam.rotation.x = -Math.PI / 2;
-        foam.position.y = -0.4;
-        gameRoot.add(foam);
+        // AC-style shore: staggered foam rings roll in toward the beach.
+        type ShoreWave = { ring: THREE.Mesh; mat: THREE.MeshBasicMaterial; phase: number };
+        const shoreWaves: ShoreWave[] = [0, 0.33, 0.66].map((phase) => {
+          const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+          const ring = new THREE.Mesh(new THREE.RingGeometry(0.985, 1.005, 96), mat);
+          ring.rotation.x = -Math.PI / 2;
+          ring.position.y = -0.4;
+          gameRoot.add(ring);
+          return { ring, mat, phase };
+        });
 
         // Distant islets so the horizon is not empty water.
         for (const [ix, iz, s] of [[62, -60, 7], [78, 30, 11], [-58, 55, 6]] as const) {
@@ -619,8 +628,8 @@ export default function MapleCove() {
         type SwimFish = {
           obj: THREE.Object3D; zone: (typeof FISH_ZONES)[number];
           x: number; z: number; angle: number; speed: number;
-          state: "swim" | "lured" | "gone"; stateT: number; respawnAt: number;
-          nibbles: number; nextNibbleAt: number;
+          state: "swim" | "lured" | "biting" | "gone"; stateT: number; respawnAt: number;
+          nibbles: number; nextNibbleAt: number; biteUntil: number;
         };
         const fishTemplate = fitMax(sceneFor(ASSETS.props.fish), 0.62);
         const swimFish: SwimFish[] = [0, 1, 2, 0].map((zoneIndex, i) => {
@@ -633,7 +642,7 @@ export default function MapleCove() {
             x: THREE.MathUtils.lerp(zone.x0, zone.x1, 0.3 + 0.4 * ((i * 0.37) % 1)),
             z: THREE.MathUtils.lerp(zone.z0, zone.z1, 0.2 + 0.6 * ((i * 0.61) % 1)),
             angle: i * 1.9, speed: 0.55 + (i % 3) * 0.18,
-            state: "swim", stateT: 0, respawnAt: 0, nibbles: 0, nextNibbleAt: 0,
+            state: "swim", stateT: 0, respawnAt: 0, nibbles: 0, nextNibbleAt: 0, biteUntil: 0,
           };
         });
         const bobber = new THREE.Group();
@@ -653,6 +662,7 @@ export default function MapleCove() {
         bobber.visible = false;
         gameRoot.add(bobber);
         let luredFish: SwimFish | null = null;
+        let lastCastPromptAt = -10;
         let bobberDipT = 0;
         let bobberBaseY = 0;
         const nibbleAudio = new Audio(ASSETS.audio.splash);
@@ -1182,6 +1192,7 @@ export default function MapleCove() {
         controllerRef.current = {
           start: begin,
           resume,
+          action: () => { actionQueued = true; },
           toggleSound: () => {
             soundOn = !soundOn;
             if (!soundOn) Object.values(audio).forEach((a) => a.pause());
@@ -1227,6 +1238,11 @@ export default function MapleCove() {
           if (down && qa && key === "f") { elapsed = DAY_CYCLE / 2; return; }
           if (down && qa && key === "g") { playerRoot.position.set(18, 0, 2); return; }
           if (down && qa && key === "y") { coins += 200; if (coins >= HOUSE_COST) reachGoal(); pushUi(); return; }
+          if (key === " " || key === "enter") {
+            event.preventDefault();
+            if (down && !event.repeat) actionQueued = true;
+            return;
+          }
           const direction = keyMap[key];
           if (!direction) return;
           event.preventDefault();
@@ -1507,7 +1523,7 @@ export default function MapleCove() {
                   fish.z += (dzb / db) * 1.15 * dt;
                 } else if (fish.nibbles > 0) {
                   // AC-style nibbles: the bobber dips a few times before the
-                  // real bite — patience is the whole game.
+                  // real bite — hook too early and it bolts.
                   if (elapsed >= fish.nextNibbleAt) {
                     fish.nibbles -= 1;
                     fish.nextNibbleAt = elapsed + 0.7 + (fish.speed * 10) % 0.6;
@@ -1516,21 +1532,23 @@ export default function MapleCove() {
                     if (soundOn) void nibbleAudio.play().catch(() => undefined);
                   }
                 } else {
-                  // The real bite: bobber plunges, splash, and the catch banner.
-                  play("splash");
-                  bobberDipT = 0.6;
-                  fish.state = "gone";
-                  fish.obj.visible = false;
-                  fish.respawnAt = elapsed + 20;
-                  bobber.visible = false;
-                  luredFish = null;
-                  dropItem(
-                    "fish", fish.x, fish.z,
-                    playerRoot.position.x + (playerRoot.position.x - fish.x) * 0.25,
-                    playerRoot.position.z + (playerRoot.position.z - fish.z) * 0.25,
-                  );
-                  banner("🐟", "I caught a prehistoric fish! It's positively ancient!");
+                  // The REAL bite: a short window to press the action button.
+                  fish.state = "biting";
+                  fish.biteUntil = elapsed + 1.15;
+                  nibbleAudio.currentTime = 0;
+                  if (soundOn) void nibbleAudio.play().catch(() => undefined);
+                  toast("❗ NOW! Press SPACE!");
                 }
+              }
+            } else if (fish.state === "biting") {
+              bobberDipT = 0.2; // bobber stays plunged through the window
+              if (moving || insideDoor || !running || elapsed > fish.biteUntil) {
+                fish.state = "gone";
+                fish.obj.visible = false;
+                fish.respawnAt = elapsed + 10;
+                bobber.visible = false;
+                luredFish = null;
+                toast("💨 It slipped the hook…");
               }
             }
             fish.obj.position.set(fish.x, fish.zone.y + Math.sin(elapsed * 3 + fish.speed * 20) * 0.02, fish.z);
@@ -1543,21 +1561,9 @@ export default function MapleCove() {
               }
             }
           });
-          if (running && !insideDoor && !luredFish && nearestFish && nearestFishD < CAST_RANGE && !moving) {
-            const target: SwimFish = nearestFish;
-            luredFish = target;
-            target.state = "lured";
-            target.stateT = 0;
-            target.nibbles = 1 + Math.floor(((elapsed * 7) % 1) * 3);
-            target.nextNibbleAt = 0;
-            bobberBaseY = target.zone.y + 0.05;
-            bobber.position.set(
-              THREE.MathUtils.lerp(playerRoot.position.x, target.x, 0.55),
-              bobberBaseY,
-              THREE.MathUtils.lerp(playerRoot.position.z, target.z, 0.55),
-            );
-            bobber.visible = true;
-            toast("🎣 Hold still… something's coming!");
+          if (running && !insideDoor && !luredFish && nearestFish && nearestFishD < CAST_RANGE && elapsed - lastCastPromptAt > 5) {
+            lastCastPromptAt = elapsed;
+            toast("🎣 Press SPACE to cast!");
           }
           bobberDipT = Math.max(0, bobberDipT - dt);
           bobber.position.y = bobberBaseY + (bobberDipT > 0 ? -0.12 : 0) + Math.sin(elapsed * 5) * 0.015;
@@ -1573,6 +1579,7 @@ export default function MapleCove() {
           // Catchable dragonflies orbit the meadows; the net comes out nearby,
           // walk close to swing and store the catch.
           let nearestBugD = Infinity;
+          let nearestBug: CatchableBug | null = null;
           catchableBugs.forEach((bug) => {
             if (bug.caught) {
               if (bug.respawnAt > 0 && elapsed >= bug.respawnAt) {
@@ -1590,7 +1597,10 @@ export default function MapleCove() {
             bug.root.rotation.y = -a + Math.PI / 2;
             if (!running || insideDoor) return;
             const d = Math.hypot(bug.root.position.x - playerRoot.position.x, bug.root.position.z - playerRoot.position.z);
-            if (d < nearestBugD) nearestBugD = d;
+            if (d < nearestBugD) {
+              nearestBugD = d;
+              nearestBug = bug;
+            }
             // AC-style sneaking: rushing straight in startles the dragonfly.
             // Creep in short bursts — alarm builds while you move nearby and
             // fades while you hold still.
@@ -1607,18 +1617,6 @@ export default function MapleCove() {
               toast("💨 The dragonfly darted away!");
               return;
             }
-            if (d < 1.35) {
-              bug.caught = true;
-              bug.root.visible = false;
-              bug.respawnAt = elapsed + 30;
-              netFlashT = 0.5;
-              play("swoosh");
-              carried.push("bug");
-              refreshCarried();
-              play("pickup");
-              banner("🦋", "I caught a giant dragonfly! Positively prehistoric!");
-              pushUi();
-            }
           });
           netFlashT = Math.max(0, netFlashT - dt);
           // Net is held whenever a catchable dragonfly is nearby (AC-style
@@ -1630,6 +1628,71 @@ export default function MapleCove() {
             netProp.position.copy(toolAnchor);
             netProp.quaternion.copy(playerRoot.quaternion);
             netProp.rotateZ(netFlashT > 0 ? Math.sin(netFlashT * 14) * 0.9 : 0.25);
+          }
+
+          // One action button, resolved by context (AC style): hook a biting
+          // fish, swing the net, cast at a nearby fish, or whiff.
+          if (actionQueued) {
+            actionQueued = false;
+            if (running && !insideDoor) {
+              if (luredFish && luredFish.state === "biting") {
+                const fish = luredFish;
+                play("splash");
+                fish.state = "gone";
+                fish.obj.visible = false;
+                fish.respawnAt = elapsed + 20;
+                bobber.visible = false;
+                luredFish = null;
+                dropItem(
+                  "fish", fish.x, fish.z,
+                  playerRoot.position.x + (playerRoot.position.x - fish.x) * 0.25,
+                  playerRoot.position.z + (playerRoot.position.z - fish.z) * 0.25,
+                );
+                banner("🐟", "I caught a prehistoric fish! It's positively ancient!");
+              } else if (luredFish) {
+                const fish = luredFish;
+                fish.state = "gone";
+                fish.obj.visible = false;
+                fish.respawnAt = elapsed + 8;
+                bobber.visible = false;
+                luredFish = null;
+                toast("💨 Too soon! It got away…");
+              } else if (nearestBug && nearestBugD < 1.75) {
+                const bug: CatchableBug = nearestBug;
+                bug.caught = true;
+                bug.root.visible = false;
+                bug.respawnAt = elapsed + 30;
+                bug.alarm = 0;
+                netFlashT = 0.5;
+                play("swoosh");
+                carried.push("bug");
+                refreshCarried();
+                play("pickup");
+                banner("🦋", "I caught a giant dragonfly! Positively prehistoric!");
+                pushUi();
+              } else if (nearestFish && nearestFishD < CAST_RANGE) {
+                const target: SwimFish = nearestFish;
+                luredFish = target;
+                target.state = "lured";
+                target.stateT = 0;
+                target.nibbles = 1 + Math.floor(((elapsed * 7) % 1) * 3);
+                target.nextNibbleAt = 0;
+                bobberBaseY = target.zone.y + 0.05;
+                bobber.position.set(
+                  THREE.MathUtils.lerp(playerRoot.position.x, target.x, 0.55),
+                  bobberBaseY,
+                  THREE.MathUtils.lerp(playerRoot.position.z, target.z, 0.55),
+                );
+                bobber.visible = true;
+                toast("🎣 Cast! Hold still and wait for the plunge…");
+              } else if (nearestBug && nearestBugD < 4.5) {
+                const bug: CatchableBug = nearestBug;
+                netFlashT = 0.5;
+                play("swoosh");
+                bug.alarm = Math.min(1, bug.alarm + 0.5);
+                toast("💨 Swing and a miss!");
+              }
+            }
           }
 
           // Soil patches: plant carried fruit, saplings grow into real trees.
@@ -1764,25 +1827,42 @@ export default function MapleCove() {
             }
             (puff.material as THREE.MeshBasicMaterial).opacity = 0.55 * Math.max(0, 1 - (puff.position.y - 20) / 24);
           });
-          foamMat.opacity = 0.24 + Math.sin(elapsed * 1.3) * 0.12;
-          foam.scale.setScalar(1 + Math.sin(elapsed * 1.3) * 0.004);
-          // Rolling water: gentle crossing swells on the sea, a downstream
-          // ripple train on the river.
+          // Shore waves roll in toward the beach and dissolve.
+          shoreWaves.forEach((wave) => {
+            const progress = (elapsed * 0.22 + wave.phase) % 1;
+            const radius = 33.5 - progress * 3.6;
+            wave.ring.scale.setScalar(radius);
+            wave.mat.opacity = Math.sin(Math.PI * progress) * 0.42;
+          });
+          // Rolling water: displaced swells + moving two-tone bands so the
+          // motion reads clearly in flat toon lighting.
           {
             const pos = waterGeo.attributes.position;
+            const col = waterGeo.attributes.color;
             for (let i = 0; i < pos.count; i += 1) {
               const wx = pos.getX(i);
               const wy = pos.getY(i);
-              pos.setZ(i, Math.sin(wx * 0.16 + elapsed * 1.1) * 0.09 + Math.cos(wy * 0.13 + elapsed * 0.8) * 0.09);
+              const swell = Math.sin(wx * 0.11 + elapsed * 1.1) + Math.cos(wy * 0.09 + elapsed * 0.75);
+              pos.setZ(i, swell * 0.08);
+              const k = 0.5 + swell * 0.16;
+              // base #4fa3c9 → light #86cde2
+              col.setXYZ(i, 0.31 + 0.215 * k, 0.64 + 0.165 * k, 0.79 + 0.095 * k);
             }
             pos.needsUpdate = true;
+            col.needsUpdate = true;
             waterGeo.computeVertexNormals();
             const rpos = riverGeo.attributes.position;
+            const rcol = riverGeo.attributes.color;
             for (let i = 0; i < rpos.count; i += 1) {
               const ry = rpos.getY(i);
-              rpos.setZ(i, Math.sin(ry * 0.9 - elapsed * 2.4) * 0.035);
+              const flow = Math.sin(ry * 0.85 - elapsed * 2.6);
+              rpos.setZ(i, flow * 0.03);
+              const k = 0.5 + flow * 0.35;
+              // base #58b4d6 → light #93dcee
+              rcol.setXYZ(i, 0.345 + 0.23 * k, 0.705 + 0.155 * k, 0.84 + 0.095 * k);
             }
             rpos.needsUpdate = true;
+            rcol.needsUpdate = true;
             riverGeo.computeVertexNormals();
           }
 
@@ -1927,8 +2007,11 @@ export default function MapleCove() {
       {ui.banter && <div className="npc-banter"><b>{ui.banter.speaker}</b><span>“{ui.banter.line}”</span></div>}
       <div className="keyboard-hint">
         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
-        <span>SHAKE · FISH · CATCH BUGS · PLANT · EARN YOUR HUT</span>
+        <span>MOVE ·</span>
+        <kbd>SPACE</kbd>
+        <span>CAST & SWING · EARN YOUR HUT</span>
       </div>
+      <button className="action-btn" onPointerDown={() => controllerRef.current?.action()} aria-label="Cast or swing">A</button>
       <div className="touch-controls" aria-label="Touch controls">
         <button onPointerDown={() => hold("forward", true)} onPointerUp={() => hold("forward", false)} aria-label="Move forward">▲</button>
         <div>
