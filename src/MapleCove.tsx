@@ -392,6 +392,45 @@ export default function MapleCove() {
         river.position.set((RIVER_X0 + RIVER_X1) / 2, 0.018, 0);
         gameRoot.add(river);
 
+        // Illustrated wave glyphs — white arcs drawn ON TOP of the water,
+        // fading in and out as they drift (the Animal Crossing sea look).
+        const rand = (seed: number) => {
+          const v = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+          return v - Math.floor(v);
+        };
+        type WaveGlyph = { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; t: number; dur: number; seed: number };
+        const glyphGeo = new THREE.TorusGeometry(1.5, 0.07, 6, 26, Math.PI * 0.5);
+        const waveGlyphs: WaveGlyph[] = [];
+        const respawnGlyph = (glyph: WaveGlyph) => {
+          glyph.seed += 17.31;
+          const angle = rand(glyph.seed) * Math.PI * 2;
+          const radius = 33 + rand(glyph.seed + 1) * 34;
+          glyph.mesh.position.set(Math.cos(angle) * radius, -0.4, Math.sin(angle) * radius);
+          glyph.mesh.rotation.z = rand(glyph.seed + 2) * Math.PI * 2;
+          glyph.dur = 3.5 + rand(glyph.seed + 3) * 2.5;
+          glyph.t = 0;
+          glyph.mesh.scale.setScalar(0.8 + rand(glyph.seed + 4) * 0.9);
+        };
+        for (let i = 0; i < 16; i += 1) {
+          const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+          const mesh = new THREE.Mesh(glyphGeo, mat);
+          mesh.rotation.x = -Math.PI / 2;
+          gameRoot.add(mesh);
+          const glyph: WaveGlyph = { mesh, mat, t: 0, dur: 4, seed: i * 3.7 };
+          respawnGlyph(glyph);
+          glyph.t = rand(i * 9.1) * glyph.dur; // desync starts
+          waveGlyphs.push(glyph);
+        }
+        // Short white dashes drifting down the river current.
+        const riverDashGeo = new THREE.PlaneGeometry(0.08, 0.9);
+        const riverDashes: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; z: number; x: number; speed: number }[] = [];
+        for (let i = 0; i < 5; i += 1) {
+          const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 });
+          const mesh = new THREE.Mesh(riverDashGeo, mat);
+          mesh.rotation.x = -Math.PI / 2;
+          gameRoot.add(mesh);
+          riverDashes.push({ mesh, mat, z: -26 + i * 11, x: RIVER_X0 + 1 + rand(i * 5.3) * 3, speed: 1.6 + rand(i * 2.9) * 0.9 });
+        }
         // AC-style shore: staggered foam rings roll in toward the beach.
         type ShoreWave = { ring: THREE.Mesh; mat: THREE.MeshBasicMaterial; phase: number };
         const shoreWaves: ShoreWave[] = [0, 0.33, 0.66].map((phase) => {
@@ -630,19 +669,80 @@ export default function MapleCove() {
 
         // Stone-age tools are parented INTO the right hand bone so they move
         // with every animation frame instead of floating beside the player.
-        const attachTool = (tool: THREE.Object3D, lift: number, rot: [number, number, number]) => {
+        const attachTool = (tool: THREE.Object3D, rot: [number, number, number], flip = false) => {
           prepare(tool);
-          const inner = tool.children[0];
-          if (inner) inner.position.y += lift; // grip (bottom end) at the bone origin
+          // Re-root the contents in a spin group so we can rotate around the
+          // bbox center, stand the LONGEST axis up along +Y, then slide the
+          // handle end down into the fist. No guessing about export axes.
+          const spin = new THREE.Group();
+          while (tool.children.length) spin.add(tool.children[0]);
+          tool.add(spin);
+          tool.updateMatrixWorld(true);
+          // The models are exported at arbitrary diagonal orientations, so a
+          // 90° axis swap isn't enough: find the true principal axis of the
+          // vertex cloud (power iteration) and rotate it onto +Y.
+          // Some Mint props export as little dioramas of disconnected parts —
+          // keep the largest piece and its close neighbors, hide strays.
+          const parts: { mesh: THREE.Mesh; center: THREE.Vector3; volume: number }[] = [];
+          spin.updateMatrixWorld(true);
+          spin.traverse((child) => {
+            const mesh = child as THREE.Mesh;
+            if (!mesh.isMesh || !mesh.geometry?.attributes?.position) return;
+            const bb = new THREE.Box3().setFromObject(mesh);
+            const sz = bb.getSize(new THREE.Vector3());
+            parts.push({ mesh, center: bb.getCenter(new THREE.Vector3()), volume: sz.x * sz.y * sz.z });
+          });
+          const main = parts.reduce((a, b) => (b.volume > a.volume ? b : a), parts[0]);
+          if (main) {
+            parts.forEach((part) => {
+              if (part.mesh !== main.mesh && part.center.distanceTo(main.center) > 0.38) part.mesh.visible = false;
+            });
+          }
+          const pts: THREE.Vector3[] = [];
+          spin.traverse((child) => {
+            const mesh = child as THREE.Mesh;
+            if (!mesh.isMesh || !mesh.visible || !mesh.geometry?.attributes?.position) return;
+            const posAttr = mesh.geometry.attributes.position;
+            const step = Math.max(1, Math.floor(posAttr.count / 250));
+            for (let i = 0; i < posAttr.count; i += step) {
+              pts.push(new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(mesh.matrixWorld));
+            }
+          });
+          const mean = new THREE.Vector3();
+          pts.forEach((q) => mean.add(q));
+          mean.multiplyScalar(1 / Math.max(1, pts.length));
+          let axis = new THREE.Vector3(0.3, 1, 0.2).normalize();
+          const scratch = new THREE.Vector3();
+          for (let iter = 0; iter < 14; iter += 1) {
+            const next = new THREE.Vector3();
+            for (const q of pts) {
+              scratch.copy(q).sub(mean);
+              next.addScaledVector(scratch, scratch.dot(axis));
+            }
+            axis = next.normalize();
+          }
+          if (axis.y < 0) axis.multiplyScalar(-1);
+          spin.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(axis, new THREE.Vector3(0, 1, 0)));
+          if (flip) spin.rotateX(Math.PI); // business end up, handle down
+          tool.updateMatrixWorld(true);
+          const after = new THREE.Box3();
+          spin.traverse((child) => {
+            const mesh = child as THREE.Mesh;
+            if (mesh.isMesh && mesh.visible) after.expandByObject(mesh);
+          });
+          spin.position.y -= after.min.y + 0.1; // grip: bottom 10cm sits in the hand
+          spin.position.x -= (after.min.x + after.max.x) / 2;
+          spin.position.z -= (after.min.z + after.max.z) / 2;
           rightHandBone.add(tool);
           const boneScale = rightHandBone.getWorldScale(new THREE.Vector3()).x || 1;
           tool.scale.setScalar(1 / boneScale);
           tool.rotation.set(rot[0], rot[1], rot[2]);
+          tool.position.set(0.02, 0.04, 0.03); // nestle into the palm
           tool.visible = false;
           return tool;
         };
-        const rodProp = attachTool(fitMax(sceneFor(ASSETS.props.fishingRod), 1.15), 0.42, [0.4, 0.2, -1.35]);
-        const netProp = attachTool(fitMax(sceneFor(ASSETS.props.bugNet), 1.05), 0.38, [0.4, 0.2, -1.35]);
+        const rodProp = attachTool(fitMax(sceneFor(ASSETS.props.fishingRod), 0.72), [0.35, 0.1, -0.3]);
+        const netProp = attachTool(fitMax(sceneFor(ASSETS.props.bugNet), 0.66), [0.35, 0.1, -0.3], true);
         const saplingTemplate = fitHeight(sceneFor(ASSETS.props.sapling), 0.8);
         let netFlashT = 0;
 
@@ -911,6 +1011,18 @@ export default function MapleCove() {
             interiorColliders.set(key, collider);
           }, undefined, (error) => console.warn("Interior collider failed:", key, error));
         };
+        // Warm every room in the background shortly after the island loads —
+        // first door entry becomes a reveal instead of a stall.
+        Object.keys(INTERIOR_WORLDS).forEach((key, index) => {
+          if (!INTERIOR_WORLDS[key]) return;
+          const warmTimer = window.setTimeout(() => {
+            if (!disposed) {
+              loadInteriorCollider(key);
+              warmSplat(key);
+            }
+          }, 4000 + index * 5000);
+          timers.push(warmTimer);
+        });
         // Exit doormat: you appear on it; step off, and step back on to leave.
         const exitPad = new THREE.Mesh(
           new THREE.RingGeometry(0.5, 0.72, 28),
@@ -935,7 +1047,7 @@ export default function MapleCove() {
         };
         // Splat rooms are captured a bit oversized for a 1.25m kid — scale
         // each room (splat + collider together) down to child proportions.
-        const INTERIOR_SCALE = 0.72;
+        const INTERIOR_SCALE = 1.25;
         const interiorRooms = new Map<string, THREE.Group>();
         const roomFor = (key: string) => {
           let room = interiorRooms.get(key);
@@ -960,6 +1072,19 @@ export default function MapleCove() {
               return null;
             });
           return sparkModule;
+        };
+        const warmSplat = (key: string) => {
+          if (interiorSplats.has(key) || !INTERIOR_WORLDS[key]) return;
+          void loadSpark().then((mod) => {
+            if (!mod || disposed || interiorSplats.has(key)) return;
+            const splat = new mod.SplatMesh({ url: INTERIOR_WORLDS[key] });
+            splat.quaternion.set(1, 0, 0, 0);
+            splat.position.set(0, 1.5, 0);
+            interiorSplats.set(key, splat);
+            const room = roomFor(key);
+            room.add(splat);
+            room.visible = false;
+          });
         };
         const showInterior = (key: string) => {
           interiorRooms.forEach((room, k) => { room.visible = k === key; });
@@ -1234,6 +1359,10 @@ export default function MapleCove() {
             pressed,
             villagers: villagerRuntimes,
             fish: swimFish,
+            camera,
+            rod: rodProp,
+            net: netProp,
+            setFreezeCam: (v: boolean) => { qaFreezeCam = v; },
             state: () => ({ phase, running, coins, houseBuilt, inside: insideDoor?.key ?? null, carried: [...carried] }),
           };
         }
@@ -1371,6 +1500,8 @@ export default function MapleCove() {
           playerRoot.rotation.y = Math.atan2(-door.exitX, -door.exitZ);
           pushUi();
         };
+
+        let qaFreezeCam = false;
 
         // ---------- Main loop ----------
         let last = performance.now();
@@ -1889,6 +2020,20 @@ export default function MapleCove() {
             }
             (puff.material as THREE.MeshBasicMaterial).opacity = 0.55 * Math.max(0, 1 - (puff.position.y - 20) / 24);
           });
+          // Illustrated wave glyphs fade, drift, respawn.
+          waveGlyphs.forEach((glyph) => {
+            glyph.t += dt;
+            if (glyph.t >= glyph.dur) respawnGlyph(glyph);
+            const progress = glyph.t / glyph.dur;
+            glyph.mat.opacity = Math.sin(Math.PI * progress) * 0.6;
+            glyph.mesh.position.x += dt * 0.25;
+          });
+          riverDashes.forEach((dash) => {
+            dash.z += dash.speed * dt;
+            if (dash.z > 27) dash.z = -27;
+            dash.mesh.position.set(dash.x, 0.05, dash.z);
+            dash.mat.opacity = 0.18 + Math.sin(elapsed * 2 + dash.x) * 0.1;
+          });
           // Shore waves roll in toward the beach and dissolve.
           shoreWaves.forEach((wave) => {
             const progress = (elapsed * 0.22 + wave.phase) % 1;
@@ -1909,7 +2054,7 @@ export default function MapleCove() {
               const phase = (wx * 0.62 + wy * 0.78) * 0.075 - elapsed * 0.55;
               const swell = Math.sin(phase) + Math.sin(phase * 0.47 + 1.7) * 0.55;
               pos.setZ(i, swell * 0.09);
-              const k = 0.5 + swell * 0.055;
+              const k = 0.5 + swell * 0.03;
               // base #4fa3c9 → light #86cde2
               col.setXYZ(i, 0.31 + 0.215 * k, 0.64 + 0.165 * k, 0.79 + 0.095 * k);
             }
@@ -1978,13 +2123,15 @@ export default function MapleCove() {
             desiredCamera.set(playerRoot.position.x, py + (skyward ? 4.6 : 6.0), playerRoot.position.z + (skyward ? 11.5 : 9.9));
             cameraTarget.set(playerRoot.position.x, py + (skyward ? 7.5 : 1.7), playerRoot.position.z - (skyward ? 9 : 2.6));
           }
-          if (snapCameraNext) {
-            snapCameraNext = false;
-            camera.position.copy(desiredCamera);
-          } else {
-            camera.position.lerp(desiredCamera, 1 - Math.pow(0.001, dt));
+          if (!qaFreezeCam) {
+            if (snapCameraNext) {
+              snapCameraNext = false;
+              camera.position.copy(desiredCamera);
+            } else {
+              camera.position.lerp(desiredCamera, 1 - Math.pow(0.001, dt));
+            }
+            camera.lookAt(cameraTarget);
           }
-          camera.lookAt(cameraTarget);
           renderer.render(scene, camera);
           animationFrame = requestAnimationFrame(render);
         };

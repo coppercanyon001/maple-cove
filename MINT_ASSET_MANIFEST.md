@@ -95,3 +95,7 @@ AC-style catching shipped: fish swim in FISH_ZONES, rod auto-out in range, bobbe
 - Credits topped up (294k) — Museum "Flintstones Fossil Hall" finished and wired (splat + collider).
 - New player clips: Over Shoulder Throw (421, rod cast) + Reaping Swing (99, net swing), batch `w57e86mrd7tttb8ptpwtbgkv4s8as9f7` → animations/rod-cast.glb, net-swing.glb.
 - Tools parented into RightHand bone (grip-aligned, bone-scale compensated). Interior rooms scaled 0.72 (splat+collider group). Islet ring of Mint trees surrounds the map; vista at (0,-2.5,-98) scale 10. Sea = single coherent swell train; river glare fixed (roughness 0.6, tint 0.075, displacement 0.014).
+
+## 2026-07-18 night updates
+- Tool v2 models (old ones exported as multi-part dioramas — unusable in-hand): "Bone Hook Pole" `ks7bpp1d6h6ssf53z65h5kx7fx8atc0h`, "Woodland Web Net" `ks79m1meqvh73cqhkmbqfs3k698atzr4`. Runtime does PCA principal-axis alignment + stray-part culling + grip shift into RightHand bone.
+- Vista world REMOVED from the game (dark-wall artifacts); horizon is now 11 Mint-tree islets + volcano. Interior rooms scaled 1.25 (player was too big), all rooms pre-warmed in background after load, candle-lit loading state. Water: AC-style illustrated white wave arcs + river dashes + gentle single-direction swell.
