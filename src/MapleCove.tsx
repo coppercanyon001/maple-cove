@@ -273,6 +273,7 @@ export default function MapleCove() {
         const loader = new GLTFLoader(manager);
         const allModelPaths = [
           ASSETS.player.model, ASSETS.player.idle, ASSETS.player.run, ASSETS.player.carry,
+          ASSETS.player.cast, ASSETS.player.netSwing,
           ...ASSETS.villagers.flatMap((v) => [v.model, v.animation]),
           ...Object.values(ASSETS.buildings),
           ...Object.values(ASSETS.props),
@@ -339,7 +340,7 @@ export default function MapleCove() {
         waterGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(waterGeo.attributes.position.count * 3).fill(1), 3));
         const water = new THREE.Mesh(
           waterGeo,
-          new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.35, metalness: 0.05 }),
+          new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.55, metalness: 0.02 }),
         );
         water.rotation.x = -Math.PI / 2;
         water.position.y = -0.52;
@@ -386,10 +387,10 @@ export default function MapleCove() {
         riverGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(riverGeo.attributes.position.count * 3).fill(1), 3));
         const river = new THREE.Mesh(
           riverGeo,
-          new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.3, transparent: true, opacity: 0.94 }),
+          new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.6, transparent: true, opacity: 0.94 }),
         );
         river.rotation.x = -Math.PI / 2;
-        river.position.set((RIVER_X0 + RIVER_X1) / 2, 0.024, 0);
+        river.position.set((RIVER_X0 + RIVER_X1) / 2, 0.018, 0);
         gameRoot.add(river);
 
         // AC-style shore: staggered foam rings roll in toward the beach.
@@ -403,17 +404,41 @@ export default function MapleCove() {
           return { ring, mat, phase };
         });
 
-        // Distant islets so the horizon is not empty water.
-        for (const [ix, iz, s] of [[62, -60, 7], [78, 30, 11], [-58, 55, 6]] as const) {
+        // A background landscape of Mint assets rings the island: green
+        // islets crowned with primeval trees and ferns at every horizon.
+        const ISLETS: { x: number; z: number; r: number; trees: ("cedarTree" | "appleTree" | "orangeTree" | "giantFern")[] }[] = [
+          { x: -70, z: -45, r: 10, trees: ["cedarTree", "cedarTree", "giantFern"] },
+          { x: -82, z: 8, r: 12, trees: ["cedarTree", "appleTree", "cedarTree", "giantFern"] },
+          { x: -58, z: 55, r: 8, trees: ["cedarTree", "giantFern"] },
+          { x: -18, z: 74, r: 11, trees: ["appleTree", "cedarTree", "cedarTree"] },
+          { x: 32, z: 68, r: 9, trees: ["cedarTree", "orangeTree", "giantFern"] },
+          { x: 74, z: 40, r: 12, trees: ["cedarTree", "cedarTree", "appleTree", "giantFern"] },
+          { x: 82, z: -18, r: 10, trees: ["orangeTree", "cedarTree", "giantFern"] },
+          { x: 60, z: -58, r: 8, trees: ["cedarTree", "cedarTree"] },
+        ];
+        ISLETS.forEach((spec, isletIndex) => {
           const islet = new THREE.Group();
           const mound = new THREE.Mesh(
-            new THREE.SphereGeometry(s, 20, 14, 0, Math.PI * 2, 0, Math.PI / 2),
+            new THREE.SphereGeometry(spec.r, 20, 14, 0, Math.PI * 2, 0, Math.PI / 2),
             new THREE.MeshStandardMaterial({ color: 0x6fae63, roughness: 1 }),
           );
+          mound.scale.y = 0.55;
           islet.add(mound);
-          islet.position.set(ix, -0.5, iz);
+          spec.trees.forEach((treeKey, treeIndex) => {
+            const angle = isletIndex * 1.3 + treeIndex * 2.1;
+            const radial = spec.r * (0.15 + 0.35 * ((treeIndex * 0.37) % 1));
+            const tx = Math.cos(angle) * radial;
+            const tz = Math.sin(angle) * radial;
+            const surfaceY = Math.sqrt(Math.max(0, spec.r * spec.r - tx * tx - tz * tz)) * 0.55;
+            const tree = fitHeight(sceneFor(ASSETS.props[treeKey]), treeKey === "giantFern" ? 3.4 : 6.5 + (treeIndex % 2) * 1.5);
+            tree.position.set(tx, surfaceY - 0.4, tz);
+            tree.rotation.y = angle * 2;
+            disableShadowCast(tree);
+            islet.add(tree);
+          });
+          islet.position.set(spec.x, -0.5, spec.z);
           gameRoot.add(islet);
-        }
+        });
 
         // A distant smoking volcano sells the prehistoric horizon.
         const volcano = new THREE.Mesh(
@@ -534,6 +559,31 @@ export default function MapleCove() {
           playerAction.fadeOut(0.16);
           playerAction = next;
         };
+        // One-shot tool animations: a real over-shoulder cast and a reaping
+        // net swing (Mint/Meshy clips), root motion stripped so they play in
+        // place, returning to idle when finished.
+        const stripRoot = (clip: THREE.AnimationClip) => {
+          const c = clip.clone();
+          c.tracks = c.tracks.filter((track) => !track.name.endsWith(".position"));
+          return c;
+        };
+        const castAction = playerMixer.clipAction(stripRoot(gltfs.get(ASSETS.player.cast)!.animations[0]));
+        castAction.setLoop(THREE.LoopOnce, 1);
+        const swingAction = playerMixer.clipAction(stripRoot(gltfs.get(ASSETS.player.netSwing)!.animations[0]));
+        swingAction.setLoop(THREE.LoopOnce, 1);
+        swingAction.timeScale = 1.5;
+        let oneShot: THREE.AnimationAction | null = null;
+        const playOneShot = (action: THREE.AnimationAction) => {
+          oneShot = action;
+          action.reset().fadeIn(0.08).play();
+          playerAction.fadeOut(0.08);
+        };
+        playerMixer.addEventListener("finished", (event) => {
+          if ((event as unknown as { action: THREE.AnimationAction }).action === oneShot) {
+            oneShot = null;
+            playerAction.reset().fadeIn(0.15).play();
+          }
+        });
         const mixers: THREE.AnimationMixer[] = [playerMixer];
 
         // ---------- Villagers ----------
@@ -584,15 +634,21 @@ export default function MapleCove() {
           bug: fitMax(sceneFor(ASSETS.props.dragonfly), 0.5),
         };
 
-        // Stone-age tools appear in the player's hand during fishing / bug catches.
-        const rodProp = fitMax(sceneFor(ASSETS.props.fishingRod), 1.15);
-        rodProp.visible = false;
-        prepare(rodProp);
-        scene.add(rodProp);
-        const netProp = fitMax(sceneFor(ASSETS.props.bugNet), 1.05);
-        netProp.visible = false;
-        prepare(netProp);
-        scene.add(netProp);
+        // Stone-age tools are parented INTO the right hand bone so they move
+        // with every animation frame instead of floating beside the player.
+        const attachTool = (tool: THREE.Object3D, lift: number, rot: [number, number, number]) => {
+          prepare(tool);
+          const inner = tool.children[0];
+          if (inner) inner.position.y += lift; // grip (bottom end) at the bone origin
+          rightHandBone.add(tool);
+          const boneScale = rightHandBone.getWorldScale(new THREE.Vector3()).x || 1;
+          tool.scale.setScalar(1 / boneScale);
+          tool.rotation.set(rot[0], rot[1], rot[2]);
+          tool.visible = false;
+          return tool;
+        };
+        const rodProp = attachTool(fitMax(sceneFor(ASSETS.props.fishingRod), 1.15), 0.42, [0.4, 0.2, -1.35]);
+        const netProp = attachTool(fitMax(sceneFor(ASSETS.props.bugNet), 1.05), 0.38, [0.4, 0.2, -1.35]);
         const saplingTemplate = fitHeight(sceneFor(ASSETS.props.sapling), 0.8);
         let netFlashT = 0;
 
@@ -670,7 +726,6 @@ export default function MapleCove() {
         let bobberBaseY = 0;
         const nibbleAudio = new Audio(ASSETS.audio.splash);
         nibbleAudio.volume = 0.16;
-        const toolAnchor = new THREE.Vector3();
 
         // ---------- Catchable Mint dragonflies ----------
         type CatchableBug = { root: THREE.Object3D; anchor: { x: number; z: number }; caught: boolean; respawnAt: number; phase: number; alarm: number };
@@ -832,7 +887,7 @@ export default function MapleCove() {
           yellow: "https://cdn.mint.gg/rad/flintstones-stegosaurus-home-8d12bd231db84843-lod.rad",
           coral: "https://cdn.mint.gg/rad/triceratops-cave-home-3bddffa781b1c3b4-lod.rad",
           shop: "https://cdn.mint.gg/rad/stone-age-general-store-f19af1bb663ca7bf-lod.rad",
-          museum: "", // bone museum hall — world final blocked on Mint credits top-up
+          museum: "https://cdn.mint.gg/rad/flintstones-fossil-hall-4c7a9bff29991c17-lod.rad",
         };
         const VISTA_URL = "https://cdn.mint.gg/rad/prehistoric-lagoon-valley-8f1fdd20cf2c997a-lod.rad";
         // Invisible collider meshes shipped with each world — walkable bounds
@@ -842,7 +897,7 @@ export default function MapleCove() {
           yellow: "https://cdn.mint.gg/worlds/flintstones-cave-home-collider-glb-58f1004e5e48a3e5.glb",
           coral: "https://cdn.mint.gg/worlds/triceratops-cave-home-collider-glb-588b89d56e56177f.glb",
           shop: "https://cdn.mint.gg/worlds/stone-age-general-store-collider-glb-f5b8a3436a3d3deb.glb",
-          museum: "",
+          museum: "https://cdn.mint.gg/worlds/flintstones-fossil-hall-collider-glb-4d7a371579074853.glb",
         };
         const interiorColliders = new Map<string, THREE.Object3D>();
         const colliderLoader = new GLTFLoader();
@@ -859,7 +914,7 @@ export default function MapleCove() {
             });
             collider.quaternion.set(1, 0, 0, 0); // same transform as the splat
             collider.position.set(0, 1.5, 0);
-            interiorRoot.add(collider);
+            roomFor(key).add(collider);
             interiorColliders.set(key, collider);
           }, undefined, (error) => console.warn("Interior collider failed:", key, error));
         };
@@ -885,6 +940,20 @@ export default function MapleCove() {
           const hits = floorRaycaster.intersectObject(collider, true);
           return hits.length ? hits[0].point.y : null;
         };
+        // Splat rooms are captured a bit oversized for a 1.25m kid — scale
+        // each room (splat + collider together) down to child proportions.
+        const INTERIOR_SCALE = 0.72;
+        const interiorRooms = new Map<string, THREE.Group>();
+        const roomFor = (key: string) => {
+          let room = interiorRooms.get(key);
+          if (!room) {
+            room = new THREE.Group();
+            room.scale.setScalar(INTERIOR_SCALE);
+            interiorRoot.add(room);
+            interiorRooms.set(key, room);
+          }
+          return room;
+        };
         const interiorSplats = new Map<string, THREE.Object3D>();
         let sparkModule: Promise<typeof import("@sparkjsdev/spark") | null> | null = null;
         const loadSpark = () => {
@@ -900,7 +969,7 @@ export default function MapleCove() {
           return sparkModule;
         };
         const showInterior = (key: string) => {
-          interiorSplats.forEach((splat, k) => { splat.visible = k === key; });
+          interiorRooms.forEach((room, k) => { room.visible = k === key; });
           loadInteriorCollider(key);
           if (interiorSplats.has(key) || !INTERIOR_WORLDS[key]) return;
           void loadSpark().then((mod) => {
@@ -909,7 +978,7 @@ export default function MapleCove() {
             splat.quaternion.set(1, 0, 0, 0); // splat convention: 180° X flip
             splat.position.set(0, 1.5, 0);
             interiorSplats.set(key, splat);
-            interiorRoot.add(splat);
+            roomFor(key).add(splat);
             interiorFloor.visible = false;
             if (new URLSearchParams(location.search).has("qa")) {
               (window as unknown as Record<string, unknown>).__splat = splat;
@@ -925,8 +994,8 @@ export default function MapleCove() {
             vista.quaternion.set(1, 0, 0, 0);
             // Parked beyond the north sea as a distant landmass — the follow
             // camera only ever faces north, so this is the whole horizon.
-            vista.scale.setScalar(7);
-            vista.position.set(0, -3, -85);
+            vista.scale.setScalar(10);
+            vista.position.set(0, -2.5, -98);
             gameRoot.add(vista);
             if (new URLSearchParams(location.search).has("qa")) {
               (window as unknown as Record<string, unknown>).__vista = vista;
@@ -1444,8 +1513,15 @@ export default function MapleCove() {
             ownHouse.scale.setScalar(Math.max(0.001, s));
           }
 
-          if (moving) setPlayerAction(runAction);
-          else setPlayerAction(idleAction);
+          if (moving && oneShot) {
+            oneShot.fadeOut(0.1);
+            oneShot = null;
+            playerAction.reset().fadeIn(0.1).play();
+          }
+          if (!oneShot) {
+            if (moving) setPlayerAction(runAction);
+            else setPlayerAction(idleAction);
+          }
           mixers.forEach((mixer) => mixer.update(dt));
 
           // Fruit trees: shake on contact, drop fruit, restock over time.
@@ -1573,13 +1649,6 @@ export default function MapleCove() {
           bobberDipT = Math.max(0, bobberDipT - dt);
           bobber.position.y = bobberBaseY + (bobberDipT > 0 ? -0.12 : 0) + Math.sin(elapsed * 5) * 0.015;
           rodProp.visible = Boolean(luredFish) || nearestFishD < ROD_OUT_RANGE;
-          if (rodProp.visible) {
-            playerRoot.updateMatrixWorld(true);
-            rightHandBone.getWorldPosition(toolAnchor);
-            rodProp.position.copy(toolAnchor);
-            rodProp.quaternion.copy(playerRoot.quaternion);
-            rodProp.rotateX(-0.85);
-          }
 
           // Catchable dragonflies orbit the meadows; the net comes out nearby,
           // walk close to swing and store the catch.
@@ -1627,13 +1696,6 @@ export default function MapleCove() {
           // Net is held whenever a catchable dragonfly is nearby (AC-style
           // tools-out), and swings during the catch flash. Rod wins if both.
           netProp.visible = !rodProp.visible && (netFlashT > 0 || nearestBugD < 4.5);
-          if (netProp.visible) {
-            playerRoot.updateMatrixWorld(true);
-            rightHandBone.getWorldPosition(toolAnchor);
-            netProp.position.copy(toolAnchor);
-            netProp.quaternion.copy(playerRoot.quaternion);
-            netProp.rotateZ(netFlashT > 0 ? Math.sin(netFlashT * 14) * 0.9 : 0.25);
-          }
 
           // One action button, resolved by context (AC style): hook a biting
           // fish, swing the net, cast at a nearby fish, or whiff.
@@ -1669,6 +1731,7 @@ export default function MapleCove() {
                 bug.respawnAt = elapsed + 30;
                 bug.alarm = 0;
                 netFlashT = 0.5;
+                playOneShot(swingAction);
                 play("swoosh");
                 carried.push("bug");
                 refreshCarried();
@@ -1689,10 +1752,12 @@ export default function MapleCove() {
                   THREE.MathUtils.lerp(playerRoot.position.z, target.z, 0.55),
                 );
                 bobber.visible = true;
+                playOneShot(castAction);
                 toast("🎣 Cast! Hold still and wait for the plunge…");
               } else if (nearestBug && nearestBugD < 4.5) {
                 const bug: CatchableBug = nearestBug;
                 netFlashT = 0.5;
+                playOneShot(swingAction);
                 play("swoosh");
                 bug.alarm = Math.min(1, bug.alarm + 0.5);
                 toast("💨 Swing and a miss!");
@@ -1847,9 +1912,12 @@ export default function MapleCove() {
             for (let i = 0; i < pos.count; i += 1) {
               const wx = pos.getX(i);
               const wy = pos.getY(i);
-              const swell = Math.sin(wx * 0.11 + elapsed * 1.1) + Math.cos(wy * 0.09 + elapsed * 0.75);
-              pos.setZ(i, swell * 0.08);
-              const k = 0.5 + swell * 0.16;
+              // One long swell train rolling steadily from the north-east —
+              // coherent parallel crests like a real current, gentle tint.
+              const phase = (wx * 0.62 + wy * 0.78) * 0.075 - elapsed * 0.55;
+              const swell = Math.sin(phase) + Math.sin(phase * 0.47 + 1.7) * 0.55;
+              pos.setZ(i, swell * 0.09);
+              const k = 0.5 + swell * 0.055;
               // base #4fa3c9 → light #86cde2
               col.setXYZ(i, 0.31 + 0.215 * k, 0.64 + 0.165 * k, 0.79 + 0.095 * k);
             }
@@ -1860,9 +1928,9 @@ export default function MapleCove() {
             const rcol = riverGeo.attributes.color;
             for (let i = 0; i < rpos.count; i += 1) {
               const ry = rpos.getY(i);
-              const flow = Math.sin(ry * 0.85 - elapsed * 2.6);
-              rpos.setZ(i, flow * 0.03);
-              const k = 0.5 + flow * 0.35;
+              const flow = Math.sin(ry * 0.42 - elapsed * 1.5) + Math.sin(ry * 0.9 - elapsed * 2.1) * 0.35;
+              rpos.setZ(i, flow * 0.014);
+              const k = 0.5 + flow * 0.075;
               // base #58b4d6 → light #93dcee
               rcol.setXYZ(i, 0.345 + 0.23 * k, 0.705 + 0.155 * k, 0.84 + 0.095 * k);
             }
@@ -1912,8 +1980,8 @@ export default function MapleCove() {
           const skyward = phase === "celebrating" || phase === "won";
           const py = insideDoor ? INTERIOR_Y : bridgeY(playerRoot.position.x, playerRoot.position.z);
           if (insideDoor) {
-            desiredCamera.set(playerRoot.position.x * 0.35, py + 1.55, playerRoot.position.z + 2.35);
-            cameraTarget.set(playerRoot.position.x * 0.5, py + 0.85, playerRoot.position.z - 0.5);
+            desiredCamera.set(playerRoot.position.x * 0.35, py + 1.35, playerRoot.position.z + 2.1);
+            cameraTarget.set(playerRoot.position.x * 0.5, py + 0.75, playerRoot.position.z - 0.5);
           } else {
             desiredCamera.set(playerRoot.position.x, py + (skyward ? 4.6 : 6.0), playerRoot.position.z + (skyward ? 11.5 : 9.9));
             cameraTarget.set(playerRoot.position.x, py + (skyward ? 7.5 : 1.7), playerRoot.position.z - (skyward ? 9 : 2.6));
