@@ -386,7 +386,7 @@ export default function MapleCove() {
         riverGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(riverGeo.attributes.position.count * 3).fill(1), 3));
         const river = new THREE.Mesh(
           riverGeo,
-          new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.6, transparent: true, opacity: 0.94 }),
+          new THREE.MeshStandardMaterial({ color: 0xf2f7f9, vertexColors: true, roughness: 0.75, transparent: true, opacity: 0.9 }),
         );
         river.rotation.x = -Math.PI / 2;
         river.position.set((RIVER_X0 + RIVER_X1) / 2, 0.018, 0);
@@ -1474,31 +1474,52 @@ export default function MapleCove() {
         };
 
         let snapCameraNext = false;
+        let doorBusy = false;
+        // AC-style door transition: quick fade to dark, swap the world behind
+        // the curtain, fade back in.
+        const doorFade = (swap: () => void) => {
+          if (doorBusy) return;
+          doorBusy = true;
+          const fade = document.getElementById("door-fade");
+          if (fade) fade.style.opacity = "1";
+          const swapTimer = window.setTimeout(() => {
+            swap();
+            snapCameraNext = true;
+            pushUi();
+            const fadeOutTimer = window.setTimeout(() => {
+              const el = document.getElementById("door-fade");
+              if (el) el.style.opacity = "0";
+              doorBusy = false;
+            }, 120);
+            timers.push(fadeOutTimer);
+          }, 270);
+          timers.push(swapTimer);
+        };
         const enterDoor = (door: (typeof DOORS)[number]) => {
-          insideDoor = door;
-          doorCooldown = 1.2;
-          snapCameraNext = true;
-          gameRoot.visible = false;
-          interiorRoot.visible = true;
-          showInterior(door.key);
-          playerRoot.position.set(0, INTERIOR_Y, 0.8);
-          playerRoot.rotation.y = Math.PI;
-          enteredAt = elapsed;
-          steppedOffPad = false;
-          toast(`Welcome inside ${door.label} — 🕯 lighting the torches…`);
-          pushUi();
+          doorCooldown = 2.0;
+          doorFade(() => {
+            insideDoor = door;
+            gameRoot.visible = false;
+            interiorRoot.visible = true;
+            showInterior(door.key);
+            playerRoot.position.set(0, INTERIOR_Y, 0.8);
+            playerRoot.rotation.y = Math.PI;
+            enteredAt = elapsed;
+            steppedOffPad = false;
+            toast(`Welcome inside ${door.label} — step back on the glowing ring to leave`);
+          });
         };
         const exitDoor = () => {
           if (!insideDoor) return;
           const door = insideDoor;
-          insideDoor = null;
           doorCooldown = 2.0;
-          snapCameraNext = true;
-          gameRoot.visible = true;
-          interiorRoot.visible = false;
-          playerRoot.position.set(door.exitX, 0, door.exitZ);
-          playerRoot.rotation.y = Math.atan2(-door.exitX, -door.exitZ);
-          pushUi();
+          doorFade(() => {
+            insideDoor = null;
+            gameRoot.visible = true;
+            interiorRoot.visible = false;
+            playerRoot.position.set(door.exitX, 0, door.exitZ);
+            playerRoot.rotation.y = Math.atan2(-door.exitX, -door.exitZ);
+          });
         };
 
         let qaFreezeCam = false;
@@ -1723,8 +1744,8 @@ export default function MapleCove() {
                 const db = Math.hypot(dxb, dzb);
                 fish.angle = Math.atan2(dzb, dxb);
                 if (db > 0.5) {
-                  fish.x += (dxb / db) * 1.15 * dt;
-                  fish.z += (dzb / db) * 1.15 * dt;
+                  fish.x = THREE.MathUtils.clamp(fish.x + (dxb / db) * 1.15 * dt, fish.zone.x0, fish.zone.x1);
+                  fish.z = THREE.MathUtils.clamp(fish.z + (dzb / db) * 1.15 * dt, fish.zone.z0, fish.zone.z1);
                 } else if (fish.nibbles > 0) {
                   // AC-style nibbles: the bobber dips a few times before the
                   // real bite — hook too early and it bolts.
@@ -1870,9 +1891,9 @@ export default function MapleCove() {
                 target.nextNibbleAt = 0;
                 bobberBaseY = target.zone.y + 0.05;
                 bobber.position.set(
-                  THREE.MathUtils.lerp(playerRoot.position.x, target.x, 0.55),
+                  THREE.MathUtils.clamp(THREE.MathUtils.lerp(playerRoot.position.x, target.x, 0.55), target.zone.x0 + 0.3, target.zone.x1 - 0.3),
                   bobberBaseY,
-                  THREE.MathUtils.lerp(playerRoot.position.z, target.z, 0.55),
+                  THREE.MathUtils.clamp(THREE.MathUtils.lerp(playerRoot.position.z, target.z, 0.55), target.zone.z0 + 0.3, target.zone.z1 - 0.3),
                 );
                 bobber.visible = true;
                 startToolAnim("cast", 0.7);
@@ -2212,6 +2233,7 @@ export default function MapleCove() {
             </div>
           ))}
       </div>
+      <div id="door-fade" className="door-fade" />
       {ui.catchBanner && (
         <div className="catch-banner"><span>{ui.catchBanner.emoji}</span>{ui.catchBanner.line}</div>
       )}

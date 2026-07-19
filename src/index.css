@@ -148,3 +148,8 @@ body { background: #78b7d3; overflow: hidden; }
   cursor: pointer; box-shadow: 0 5px 0 rgba(52, 46, 38, 0.4); touch-action: none;
 }
 .action-btn:active { transform: translateY(3px); box-shadow: none; }
+
+.door-fade {
+  position: absolute; inset: 0; z-index: 7; background: #120d0b;
+  opacity: 0; transition: opacity 0.27s ease; pointer-events: none;
+}
