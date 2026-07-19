@@ -414,6 +414,9 @@ export default function MapleCove() {
           { x: 74, z: 40, r: 12, trees: ["cedarTree", "cedarTree", "appleTree", "giantFern"] },
           { x: 82, z: -18, r: 10, trees: ["orangeTree", "cedarTree", "giantFern"] },
           { x: 60, z: -58, r: 8, trees: ["cedarTree", "cedarTree"] },
+          { x: 22, z: -66, r: 11, trees: ["cedarTree", "appleTree", "cedarTree", "giantFern"] },
+          { x: -14, z: -72, r: 13, trees: ["cedarTree", "cedarTree", "orangeTree", "cedarTree"] },
+          { x: -46, z: -62, r: 9, trees: ["cedarTree", "giantFern", "cedarTree"] },
         ];
         ISLETS.forEach((spec, isletIndex) => {
           const islet = new THREE.Group();
@@ -880,7 +883,6 @@ export default function MapleCove() {
           shop: "https://cdn.mint.gg/rad/stone-age-general-store-f19af1bb663ca7bf-lod.rad",
           museum: "https://cdn.mint.gg/rad/flintstones-fossil-hall-4c7a9bff29991c17-lod.rad",
         };
-        const VISTA_URL = "https://cdn.mint.gg/rad/prehistoric-lagoon-valley-8f1fdd20cf2c997a-lod.rad";
         // Invisible collider meshes shipped with each world — walkable bounds
         // come from the actual room geometry, not a guessed circle.
         const INTERIOR_COLLIDERS: Record<string, string> = {
@@ -970,30 +972,16 @@ export default function MapleCove() {
             splat.position.set(0, 1.5, 0);
             interiorSplats.set(key, splat);
             roomFor(key).add(splat);
-            interiorFloor.visible = false;
+            // Keep the placeholder floor + light until the stream arrives, so
+            // first entry is a cozy candle-lit wait instead of a black void.
+            void (splat as unknown as { initialized: Promise<unknown> }).initialized?.then?.(() => {
+              if (!disposed) interiorFloor.visible = false;
+            });
             if (new URLSearchParams(location.search).has("qa")) {
               (window as unknown as Record<string, unknown>).__splat = splat;
             }
           });
         };
-        // Distant prehistoric scenery: a Mint world splat wrapped around the
-        // island, sunk low so only its ridges and volcano rise past the sea.
-        if (VISTA_URL) {
-          void loadSpark().then((mod) => {
-            if (!mod || disposed) return;
-            const vista = new mod.SplatMesh({ url: VISTA_URL });
-            vista.quaternion.set(1, 0, 0, 0);
-            // Parked beyond the north sea as a distant landmass — the follow
-            // camera only ever faces north, so this is the whole horizon.
-            vista.scale.setScalar(10);
-            vista.position.set(0, -2.5, -98);
-            gameRoot.add(vista);
-            if (new URLSearchParams(location.search).has("qa")) {
-              (window as unknown as Record<string, unknown>).__vista = vista;
-            }
-          });
-        }
-
         // ---------- Game state ----------
         let phase: Phase = "ready";
         let running = false;
@@ -1368,7 +1356,7 @@ export default function MapleCove() {
           playerRoot.rotation.y = Math.PI;
           enteredAt = elapsed;
           steppedOffPad = false;
-          toast(`Welcome inside ${door.label} — step back on the glowing ring to leave`);
+          toast(`Welcome inside ${door.label} — 🕯 lighting the torches…`);
           pushUi();
         };
         const exitDoor = () => {
@@ -1427,10 +1415,10 @@ export default function MapleCove() {
           if (insideDoor) {
             // Sealed in: everything beyond the splat room fades to cave dark,
             // so the outside of the splat is never visible.
-            (scene.background as THREE.Color).setHex(0x120d0b);
-            scene.fog!.color.setHex(0x120d0b);
-            (scene.fog as THREE.Fog).near = 6;
-            (scene.fog as THREE.Fog).far = 16;
+            (scene.background as THREE.Color).setHex(0x241a13);
+            scene.fog!.color.setHex(0x241a13);
+            (scene.fog as THREE.Fog).near = 7;
+            (scene.fog as THREE.Fog).far = 20;
           } else {
             (scene.background as THREE.Color).copy(skyColor);
             scene.fog!.color.copy(skyColor);
@@ -1984,8 +1972,8 @@ export default function MapleCove() {
           const skyward = phase === "celebrating" || phase === "won";
           const py = insideDoor ? INTERIOR_Y : bridgeY(playerRoot.position.x, playerRoot.position.z);
           if (insideDoor) {
-            desiredCamera.set(playerRoot.position.x * 0.35, py + 1.35, playerRoot.position.z + 2.1);
-            cameraTarget.set(playerRoot.position.x * 0.5, py + 0.75, playerRoot.position.z - 0.5);
+            desiredCamera.set(playerRoot.position.x * 0.35, py + 1.6, playerRoot.position.z + 3.0);
+            cameraTarget.set(playerRoot.position.x * 0.5, py + 0.9, playerRoot.position.z - 0.6);
           } else {
             desiredCamera.set(playerRoot.position.x, py + (skyward ? 4.6 : 6.0), playerRoot.position.z + (skyward ? 11.5 : 9.9));
             cameraTarget.set(playerRoot.position.x, py + (skyward ? 7.5 : 1.7), playerRoot.position.z - (skyward ? 9 : 2.6));
