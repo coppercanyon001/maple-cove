@@ -90,3 +90,8 @@ Rig fix log: T-Rex v1/v2 and Ankylosaurus v1 rejected by the rig provider (snout
 | Prehistoric Lagoon Valley | `j971emcne9xvtxkrvxhdag5ttn8arnpz` | Exterior horizon vista (scale 14, y −3.5) |
 
 AC-style catching shipped: fish swim in FISH_ZONES, rod auto-out in range, bobber cast on standstill, flee on movement; net held near dragonflies. Bobber is a tiny procedural marker (non-Mint, flagged).
+
+## 2026-07-18 late updates
+- Credits topped up (294k) — Museum "Flintstones Fossil Hall" finished and wired (splat + collider).
+- New player clips: Over Shoulder Throw (421, rod cast) + Reaping Swing (99, net swing), batch `w57e86mrd7tttb8ptpwtbgkv4s8as9f7` → animations/rod-cast.glb, net-swing.glb.
+- Tools parented into RightHand bone (grip-aligned, bone-scale compensated). Interior rooms scaled 0.72 (splat+collider group). Islet ring of Mint trees surrounds the map; vista at (0,-2.5,-98) scale 10. Sea = single coherent swell train; river glare fixed (roughness 0.6, tint 0.075, displacement 0.014).
