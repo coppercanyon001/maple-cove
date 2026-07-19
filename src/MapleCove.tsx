@@ -1591,7 +1591,7 @@ export default function MapleCove() {
 
           if (insideDoor) {
             const floorY = interiorFloorY(playerRoot.position.x, playerRoot.position.z);
-            playerRoot.position.y = floorY !== null ? floorY - 0.12 : INTERIOR_Y;
+            playerRoot.position.y = floorY !== null ? floorY + 0.02 : INTERIOR_Y;
           } else {
             playerRoot.position.y = bridgeY(playerRoot.position.x, playerRoot.position.z);
           }
