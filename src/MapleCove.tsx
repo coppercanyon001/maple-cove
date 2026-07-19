@@ -273,7 +273,6 @@ export default function MapleCove() {
         const loader = new GLTFLoader(manager);
         const allModelPaths = [
           ASSETS.player.model, ASSETS.player.idle, ASSETS.player.run, ASSETS.player.carry,
-          ASSETS.player.cast, ASSETS.player.netSwing,
           ...ASSETS.villagers.flatMap((v) => [v.model, v.animation]),
           ...Object.values(ASSETS.buildings),
           ...Object.values(ASSETS.props),
@@ -539,13 +538,16 @@ export default function MapleCove() {
 
         let leftHand: THREE.Bone | null = null;
         let rightHand: THREE.Bone | null = null;
+        let rightArm: THREE.Bone | null = null;
         playerModel.traverse((child) => {
           if (!(child as THREE.Bone).isBone) return;
           if (child.name === "LeftHand") leftHand = child as THREE.Bone;
           if (child.name === "RightHand") rightHand = child as THREE.Bone;
+          if (child.name === "RightArm") rightArm = child as THREE.Bone;
         });
-        if (!rightHand) throw new Error("Mint player rig is missing hand bones.");
+        if (!rightHand || !rightArm) throw new Error("Mint player rig is missing arm bones.");
         const rightHandBone: THREE.Bone = rightHand;
+        const rightArmBone: THREE.Bone = rightArm;
         void leftHand;
 
         const playerMixer = new THREE.AnimationMixer(playerModel);
@@ -559,31 +561,20 @@ export default function MapleCove() {
           playerAction.fadeOut(0.16);
           playerAction = next;
         };
-        // One-shot tool animations: a real over-shoulder cast and a reaping
-        // net swing (Mint/Meshy clips), root motion stripped so they play in
-        // place, returning to idle when finished.
-        const stripRoot = (clip: THREE.AnimationClip) => {
-          const c = clip.clone();
-          c.tracks = c.tracks.filter((track) => !track.name.endsWith(".position"));
-          return c;
+        // Procedural tool actions: a snappy 0.7s cast whip and 0.5s net sweep
+        // applied directly to the arm bone after the mixer runs — always
+        // visible, perfectly synced, no mocap wind-up theater.
+        let toolAnimKind: "cast" | "swing" | null = null;
+        let toolAnimT = 0;
+        let toolAnimDur = 1;
+        const startToolAnim = (kind: "cast" | "swing", dur: number) => {
+          toolAnimKind = kind;
+          toolAnimDur = dur;
+          toolAnimT = dur;
         };
-        const castAction = playerMixer.clipAction(stripRoot(gltfs.get(ASSETS.player.cast)!.animations[0]));
-        castAction.setLoop(THREE.LoopOnce, 1);
-        const swingAction = playerMixer.clipAction(stripRoot(gltfs.get(ASSETS.player.netSwing)!.animations[0]));
-        swingAction.setLoop(THREE.LoopOnce, 1);
-        swingAction.timeScale = 1.5;
-        let oneShot: THREE.AnimationAction | null = null;
-        const playOneShot = (action: THREE.AnimationAction) => {
-          oneShot = action;
-          action.reset().fadeIn(0.08).play();
-          playerAction.fadeOut(0.08);
-        };
-        playerMixer.addEventListener("finished", (event) => {
-          if ((event as unknown as { action: THREE.AnimationAction }).action === oneShot) {
-            oneShot = null;
-            playerAction.reset().fadeIn(0.15).play();
-          }
-        });
+        const toolArmAxisX = new THREE.Vector3(1, 0, 0);
+        const toolArmAxisY = new THREE.Vector3(0, 1, 0);
+        const toolArmQuat = new THREE.Quaternion();
         const mixers: THREE.AnimationMixer[] = [playerMixer];
 
         // ---------- Villagers ----------
@@ -1466,7 +1457,7 @@ export default function MapleCove() {
           }
           const dx = (pressed.right ? 1 : 0) - (pressed.left ? 1 : 0);
           const dz = (pressed.back ? 1 : 0) - (pressed.forward ? 1 : 0);
-          const moving = running && Boolean(dx || dz);
+          const moving = running && Boolean(dx || dz) && toolAnimT <= 0;
           if (moving) {
             move.set(dx, 0, dz).normalize();
             const speed = 5.4;
@@ -1513,16 +1504,29 @@ export default function MapleCove() {
             ownHouse.scale.setScalar(Math.max(0.001, s));
           }
 
-          if (moving && oneShot) {
-            oneShot.fadeOut(0.1);
-            oneShot = null;
-            playerAction.reset().fadeIn(0.1).play();
-          }
-          if (!oneShot) {
-            if (moving) setPlayerAction(runAction);
-            else setPlayerAction(idleAction);
-          }
+          if (moving) setPlayerAction(runAction);
+          else setPlayerAction(idleAction);
           mixers.forEach((mixer) => mixer.update(dt));
+
+          // Tool action overlay: windup-and-whip for the cast, a horizontal
+          // sweep for the net — applied on top of the playing animation.
+          if (toolAnimT > 0) {
+            toolAnimT = Math.max(0, toolAnimT - dt);
+            const progress = 1 - toolAnimT / toolAnimDur;
+            if (toolAnimKind === "cast") {
+              const angle = progress < 0.38
+                ? -1.9 * (progress / 0.38)
+                : -1.9 + 3.1 * Math.min(1, (progress - 0.38) / 0.42);
+              toolArmQuat.setFromAxisAngle(toolArmAxisX, angle * (1 - Math.max(0, (progress - 0.8) / 0.2)));
+              rightArmBone.quaternion.multiply(toolArmQuat);
+            } else if (toolAnimKind === "swing") {
+              const sweep = Math.sin(progress * Math.PI);
+              toolArmQuat.setFromAxisAngle(toolArmAxisY, -1.3 * sweep);
+              rightArmBone.quaternion.multiply(toolArmQuat);
+              toolArmQuat.setFromAxisAngle(toolArmAxisX, -0.7 * sweep);
+              rightArmBone.quaternion.multiply(toolArmQuat);
+            }
+          }
 
           // Fruit trees: shake on contact, drop fruit, restock over time.
           fruitTrees.forEach((tree) => {
@@ -1731,7 +1735,7 @@ export default function MapleCove() {
                 bug.respawnAt = elapsed + 30;
                 bug.alarm = 0;
                 netFlashT = 0.5;
-                playOneShot(swingAction);
+                startToolAnim("swing", 0.5);
                 play("swoosh");
                 carried.push("bug");
                 refreshCarried();
@@ -1752,12 +1756,12 @@ export default function MapleCove() {
                   THREE.MathUtils.lerp(playerRoot.position.z, target.z, 0.55),
                 );
                 bobber.visible = true;
-                playOneShot(castAction);
+                startToolAnim("cast", 0.7);
                 toast("🎣 Cast! Hold still and wait for the plunge…");
               } else if (nearestBug && nearestBugD < 4.5) {
                 const bug: CatchableBug = nearestBug;
                 netFlashT = 0.5;
-                playOneShot(swingAction);
+                startToolAnim("swing", 0.5);
                 play("swoosh");
                 bug.alarm = Math.min(1, bug.alarm + 0.5);
                 toast("💨 Swing and a miss!");

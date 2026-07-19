@@ -10,8 +10,6 @@ export const MAPLE_MINT_ASSETS = {
     idle: "animations/idle.glb",
     run: "animations/run.glb",
     carry: "animations/carry.glb",
-    cast: "animations/rod-cast.glb",
-    netSwing: "animations/net-swing.glb",
   },
   villagers: [
     { key: "triceratops", name: "TRIXIE", model: "models/triceratops-villager-rigged.glb", animation: "animations/stand-and-chat.glb" },
